@@ -53,9 +53,10 @@ describe('collectFromJsonl', () => {
     })
   })
 
-  it('prompt-cache regression: cacheRead/cacheWrite/reasoning tokens are aggregated into total', () => {
-    // 真实压测场景：第二次跑命中 prompt cache，inputTokens 只剩 28，
-    // 真实输入在 cacheReadTokens 里——漏计会让 max_tokens 严重低估。
+  it('prompt-cache regression: cacheRead/cacheWrite/reasoning are kept per-field; total excludes cache', () => {
+    // 真实压测场景：第二次跑命中 prompt cache，inputTokens 只剩 28，真实输入在
+    // cacheReadTokens 里。cacheRead 是多步会话里重复读回的缓存命中，全额累加会
+    // 让 max_tokens 随步数膨胀——故 cacheRead/cacheWrite 只保留字段、不进 total。
     const t = collectFromJsonl(
       [
         frame('assistant/message', { message: 'a', usage: { inputTokens: 8000, outputTokens: 50 } }),
@@ -65,7 +66,7 @@ describe('collectFromJsonl', () => {
         }),
       ].join('\n'),
     )
-    expect(t.tokens).toEqual({ input: 8028, output: 140, cacheRead: 8064, cacheWrite: 120, reasoning: 33, total: 16385 })
+    expect(t.tokens).toEqual({ input: 8028, output: 140, cacheRead: 8064, cacheWrite: 120, reasoning: 33, total: 8201 })
   })
 
   it('ignores unrelated frame types', () => {
@@ -135,6 +136,32 @@ describe('tool/result error extraction', () => {
       ].join('\n'),
     )
     expect(t.toolErrors).toEqual([])
+  })
+
+  it('collects isError from real persisted shape (message.content[].tool-result)', () => {
+    // 真实落盘形状：tool/result 的 data 是 { message: { source:{callId}, content:[
+    // { type:'tool-result', toolCallId, content:[...], isError } ] } }，不是顶层字段。
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'call-img', name: 'read_image' }),
+        frame('tool/result', {
+          message: {
+            source: { kind: 'tool', callId: 'call-img' },
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'call-img',
+                content: [{ type: 'text', text: 'Error: cannot read "pixel.png" as an image: model does not declare image input' }],
+                isError: true,
+              },
+            ],
+          },
+        }),
+      ].join('\n'),
+    )
+    expect(t.toolErrors).toEqual([
+      { name: 'read_image', error: 'Error: cannot read "pixel.png" as an image: model does not declare image input' },
+    ])
   })
 })
 

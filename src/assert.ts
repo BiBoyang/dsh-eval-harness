@@ -42,7 +42,7 @@ export function checkAssertions(assert: EvalAssert, trace: CollectedTrace): stri
   if (assert.max_tokens !== undefined && trace.tokens.total > assert.max_tokens) {
     const t = trace.tokens
     failures.push(
-      `max_tokens: total ${t.total} (in ${t.input} + out ${t.output} + cacheR ${t.cacheRead} + cacheW ${t.cacheWrite} + reasoning ${t.reasoning}) > ${assert.max_tokens}`,
+      `max_tokens: total ${t.total} (in ${t.input} + out ${t.output} + reasoning ${t.reasoning}; cacheR ${t.cacheRead} + cacheW ${t.cacheWrite} not counted) > ${assert.max_tokens}`,
     )
   }
 

@@ -83,11 +83,11 @@ export function collectFromJsonl(text: string): CollectedTrace {
         break
       }
       case 'tool/result': {
-        // 真实帧形状（session-persistence contract）：正常结果 data.isError + content；
-        // 合成错误结果 data.error = { name, code }。两种都算硬错误。
+        // 硬错误三态：顶层 data.error（合成）/ 顶层 data.isError（旧形状）/
+        // data.message.content[] 里的 tool-result 块 isError=true（真实落盘形状）。
         const error = extractToolError(data)
         if (error !== null) {
-          const callId = typeof data.callId === 'string' ? data.callId : undefined
+          const callId = extractToolCallId(data)
           const name = (typeof data.name === 'string' && data.name) || (callId && callNames.get(callId)) || callId || '<unknown>'
           toolErrors.push({ name, error })
         }
@@ -115,7 +115,10 @@ export function collectFromJsonl(text: string): CollectedTrace {
     }
   }
 
-  tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.reasoning
+  // total 口径 = input + output + reasoning：cacheRead 是多步会话里重复读回的缓存命中
+  // （同一段系统提示/历史每步重读），全额累加会让 max_tokens 随步数膨胀；
+  // cacheRead/cacheWrite 仍单独保留在报告字段里供观察。
+  tokens.total = tokens.input + tokens.output + tokens.reasoning
   return { turnEnd, toolsCalled, finalText, steps, tokens, toolErrors, events, skippedLines }
 }
 
@@ -123,14 +126,45 @@ const TOOL_ERROR_MAX = 200
 
 /** 从 tool/result data 提取错误摘要；无错误返回 null */
 export function extractToolError(data: Record<string, unknown>): string | null {
+  // 1) 合成错误形状：顶层 data.error = { name, code, message } 或字符串
   if (data.error !== undefined && data.error !== null) {
     return truncate(formatErrorValue(data.error))
   }
+  // 2) 旧/简单形状：顶层 data.isError + data.content
   if (data.isError === true) {
     const text = extractText({ content: data.content })
     return truncate(text && text !== '' ? text : 'tool returned error (isError)')
   }
+  // 3) 真实落盘形状：data.message.content[] 里的 tool-result 块（isError=true）
+  const message = data.message as { content?: unknown } | undefined
+  if (message && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as { type?: unknown; isError?: unknown; content?: unknown }
+      if (b.type !== 'tool-result' || b.isError !== true) continue
+      const text = extractText({ content: b.content })
+      return truncate(text && text !== '' ? text : 'tool returned error (isError)')
+    }
+  }
   return null
+}
+
+/** 从 tool/result data 提取 callId（顶层 / message.source.callId / message.content[].toolCallId） */
+function extractToolCallId(data: Record<string, unknown>): string | undefined {
+  if (typeof data.callId === 'string' && data.callId !== '') return data.callId
+  const message = data.message as { source?: { callId?: unknown }; content?: unknown } | undefined
+  if (message?.source && typeof message.source.callId === 'string' && message.source.callId !== '') {
+    return message.source.callId
+  }
+  if (Array.isArray(message?.content)) {
+    for (const block of message.content) {
+      if (block && typeof block === 'object') {
+        const id = (block as { toolCallId?: unknown }).toolCallId
+        if (typeof id === 'string' && id !== '') return id
+      }
+    }
+  }
+  return undefined
 }
 
 function formatErrorValue(error: unknown): string {

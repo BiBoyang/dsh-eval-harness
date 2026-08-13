@@ -8,7 +8,7 @@ export interface EvalAssert {
   output_contains?: string[]
   /** step/end 事件数上限 */
   max_steps?: number
-  /** 聚合 token 总量（input+output+cacheRead+cacheWrite+reasoning）上限 */
+  /** 聚合 token 上限（input+output+reasoning；缓存命中 cacheRead 不计入） */
   max_tokens?: number
   /** true 时任何工具硬错误（tool/result 带 error 或 isError）即 fail */
   no_tool_errors?: boolean
@@ -25,7 +25,9 @@ export interface EvalCase {
 /**
  * 聚合 token 用量（分字段；与 DSH TokenUsage 对齐，计数互斥：
  * inputTokens 仅未缓存输入，缓存部分单独计入 cacheRead/cacheWrite）。
- * total = 全部字段相加——缓存命中 token 同样占上下文/计费，评测语义不能漏。
+ * total = input + output + reasoning——cacheRead 是缓存命中读回，多步会话里
+ * 同一段缓存每步重复读，全额累加会让 max_tokens 随步数膨胀；故不进 total，
+ * 但 cacheRead/cacheWrite 仍单独保留供观察。
  */
 export interface TokenUsage {
   input: number
