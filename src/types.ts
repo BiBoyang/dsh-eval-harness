@@ -4,14 +4,46 @@ export interface EvalAssert {
   turn_end?: string
   /** tool/call 名称序列须按序包含（保序子序列匹配） */
   tools_called?: string[]
+  /** tool/call 名称序列完全相等（长度+顺序+内容），表达"恰好调用这些" */
+  tools_exact?: string[]
+  /** 这些工具一次都不许出现 */
+  tools_not_called?: string[]
   /** 最终 assistant 文本须包含全部关键词 */
   output_contains?: string[]
+  /** 最终 assistant 文本不得包含任一关键词 */
+  output_not_contains?: string[]
+  /** 最终 assistant 文本须匹配全部正则（字符串形式，非法正则在用例解析阶段报错） */
+  output_matches?: string[]
+  /** 至少存在一次对 name 的调用，其 arguments 序列化后包含 contains */
+  tool_args_contains?: ToolPattern[]
+  /** 至少存在一次 name 的结果，其结果文本包含 contains */
+  tool_result_contains?: ToolPattern[]
   /** step/end 事件数上限 */
   max_steps?: number
   /** 聚合 token 上限（input+output+reasoning；缓存命中 cacheRead 不计入） */
   max_tokens?: number
   /** true 时任何工具硬错误（tool/result 带 error 或 isError）即 fail */
   no_tool_errors?: boolean
+}
+
+/** tool_args_contains / tool_result_contains 的匹配模式 */
+export interface ToolPattern {
+  name: string
+  contains: string
+}
+
+/** 一次 tool/call 的记录（arguments 统一序列化为 JSON 字符串） */
+export interface ToolCallRecord {
+  name: string
+  callId?: string
+  argsJson: string
+}
+
+/** 一次 tool/result 的记录（text 为结果纯文本，兼容真实落盘与旧形状） */
+export interface ToolResultRecord {
+  name: string
+  callId?: string
+  text: string
 }
 
 /** 单条评测用例 */
@@ -54,8 +86,12 @@ export function emptyTokenUsage(): TokenUsage {
 export interface CollectedTrace {
   /** 最后一个 turn/end 的 reason.kind */
   turnEnd?: string
-  /** tool/call 名称序列（按出现顺序） */
+  /** tool/call 名称序列（按出现顺序）——保留旧字段兼容旧报告 */
   toolsCalled: string[]
+  /** tool/call 完整记录（含 arguments 序列化串） */
+  toolCalls: ToolCallRecord[]
+  /** tool/result 完整记录（含结果文本） */
+  toolResults: ToolResultRecord[]
   /** 最后一条 assistant/message 的文本 */
   finalText: string
   /** step/end 事件数 */
@@ -82,6 +118,10 @@ export interface CaseResult {
   error?: string
   turnEnd?: string
   toolsCalled: string[]
+  /** tool/call 完整记录（含 arguments 序列化串） */
+  toolCalls: ToolCallRecord[]
+  /** tool/result 完整记录（含结果文本） */
+  toolResults: ToolResultRecord[]
   finalText: string
   steps: number
   tokens: TokenUsage

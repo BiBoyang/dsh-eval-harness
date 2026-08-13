@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { emptyTokenUsage } from './types.js'
-import type { CollectedTrace, ToolError } from './types.js'
+import type { CollectedTrace, ToolCallRecord, ToolError, ToolResultRecord } from './types.js'
 
 /**
  * 从 assistant/message 的 data.message 提取纯文本。
@@ -47,6 +47,8 @@ function joinTextBlocks(blocks: unknown[]): string {
  */
 export function collectFromJsonl(text: string): CollectedTrace {
   const toolsCalled: string[] = []
+  const toolCalls: ToolCallRecord[] = []
+  const toolResults: ToolResultRecord[] = []
   const tokens = emptyTokenUsage()
   const toolErrors: ToolError[] = []
   const callNames = new Map<string, string>() // tool/call 的 callId → name，供 tool/result 关联
@@ -78,17 +80,26 @@ export function collectFromJsonl(text: string): CollectedTrace {
         break
       }
       case 'tool/call': {
-        if (typeof data.name === 'string') toolsCalled.push(data.name)
-        if (typeof data.callId === 'string' && typeof data.name === 'string') callNames.set(data.callId, data.name)
+        if (typeof data.name !== 'string') break
+        toolsCalled.push(data.name)
+        const callId = typeof data.callId === 'string' && data.callId !== '' ? data.callId : undefined
+        if (callId) callNames.set(callId, data.name)
+        // arguments 统一序列化为 JSON 字符串（真实落盘是 string；对象形态兜底 JSON.stringify）
+        const rawArgs = data.arguments
+        const argsJson = typeof rawArgs === 'string' ? rawArgs : rawArgs === undefined || rawArgs === null ? '' : safeJson(rawArgs)
+        toolCalls.push({ name: data.name, callId, argsJson })
         break
       }
       case 'tool/result': {
+        const callId = extractToolCallId(data)
+        const name = (typeof data.name === 'string' && data.name) || (callId && callNames.get(callId)) || callId || '<unknown>'
+        // 结果文本：真实落盘形状 data.message.content[] 的 tool-result 块（content[] 内 text），
+        // 兼容顶层 data.content 旧形状。
+        toolResults.push({ name, callId, text: extractToolResultText(data) })
         // 硬错误三态：顶层 data.error（合成）/ 顶层 data.isError（旧形状）/
         // data.message.content[] 里的 tool-result 块 isError=true（真实落盘形状）。
         const error = extractToolError(data)
         if (error !== null) {
-          const callId = extractToolCallId(data)
-          const name = (typeof data.name === 'string' && data.name) || (callId && callNames.get(callId)) || callId || '<unknown>'
           toolErrors.push({ name, error })
         }
         break
@@ -119,7 +130,7 @@ export function collectFromJsonl(text: string): CollectedTrace {
   // （同一段系统提示/历史每步重读），全额累加会让 max_tokens 随步数膨胀；
   // cacheRead/cacheWrite 仍单独保留在报告字段里供观察。
   tokens.total = tokens.input + tokens.output + tokens.reasoning
-  return { turnEnd, toolsCalled, finalText, steps, tokens, toolErrors, events, skippedLines }
+  return { turnEnd, toolsCalled, toolCalls, toolResults, finalText, steps, tokens, toolErrors, events, skippedLines }
 }
 
 const TOOL_ERROR_MAX = 200
@@ -165,6 +176,32 @@ function extractToolCallId(data: Record<string, unknown>): string | undefined {
     }
   }
   return undefined
+}
+
+/** 提取 tool/result 的结果纯文本：真实落盘形状（message.content[] 的 tool-result 块）+ 顶层 content 旧形状 */
+export function extractToolResultText(data: Record<string, unknown>): string {
+  const message = data.message as { content?: unknown } | undefined
+  if (message && Array.isArray(message.content)) {
+    const texts: string[] = []
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as { type?: unknown; content?: unknown }
+      if (b.type !== 'tool-result') continue
+      const text = extractText({ content: b.content })
+      if (text !== undefined) texts.push(text)
+    }
+    return texts.join('')
+  }
+  const text = extractText({ content: data.content })
+  return text ?? ''
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }
 
 function formatErrorValue(error: unknown): string {

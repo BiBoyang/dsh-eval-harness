@@ -69,8 +69,22 @@ describe('parseYamlSubset', () => {
     expect(parseYamlSubset('a:\nb: 1')).toEqual({ a: null, b: 1 })
   })
 
-  it('rejects sequence item maps with a line number', () => {
-    expect(() => parseYamlSubset('items:\n- key: value')).toThrow(/line 2:.*not supported/)
+  it('parses sequence item maps with continuation lines', () => {
+    const v = parseYamlSubset(
+      ['tool_args_contains:', '- name: bash', '  contains: \'"command"\'', '- name: read', '  contains: /tmp', 'next: 1'].join('\n'),
+    )
+    expect(v).toEqual({
+      tool_args_contains: [
+        { name: 'bash', contains: '"command"' },
+        { name: 'read', contains: '/tmp' },
+      ],
+      next: 1,
+    })
+  })
+
+  it('parses sequence item map with nested value', () => {
+    const v = parseYamlSubset('items:\n- name:\n    nested: 1\n- plain')
+    expect(v).toEqual({ items: [{ name: { nested: 1 } }, 'plain'] })
   })
 
   it('rejects tab indentation', () => {
@@ -110,5 +124,55 @@ describe('parseCase validation', () => {
   it('accepts no_tool_errors boolean', () => {
     const c = parseCase('name: x\nprompt: p\nassert:\n  no_tool_errors: true', 'f.yml')
     expect(c.assert.no_tool_errors).toBe(true)
+  })
+
+  it('rejects non-list new string assertions', () => {
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  tools_exact: a', 'f.yml')).toThrow(/tools_exact.*list of strings/)
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  tools_not_called: a', 'f.yml')).toThrow(/tools_not_called.*list of strings/)
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  output_not_contains: a', 'f.yml')).toThrow(/output_not_contains.*list of strings/)
+  })
+
+  it('rejects invalid output_matches regex with case name in the message', () => {
+    expect(() => parseCase("name: my-case\nprompt: p\nassert:\n  output_matches: ['([']", 'f.yml')).toThrow(
+      /case 'my-case'.*output_matches.*invalid regex '\(\['/,
+    )
+  })
+
+  it('rejects tool_args_contains / tool_result_contains items missing name or contains', () => {
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  tool_args_contains:\n    - name: x', 'f.yml')).toThrow(
+      /tool_args_contains/,
+    )
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  tool_result_contains:\n    - contains: y', 'f.yml')).toThrow(
+      /tool_result_contains/,
+    )
+  })
+
+  it('accepts a valid combination of new assertions (incl. block-map tool patterns)', () => {
+    const c = parseCase(
+      [
+        'name: x',
+        'prompt: p',
+        'assert:',
+        '  tools_exact: [bash, read]',
+        '  tools_not_called: [write]',
+        '  output_not_contains: ["抱歉"]',
+        '  output_matches: ["^okay"]',
+        '  tool_args_contains:',
+        '    - name: bash',
+        '      contains: \'"command"\'',
+        '  tool_result_contains:',
+        '    - name: bash',
+        '      contains: total',
+      ].join('\n'),
+      'f.yml',
+    )
+    expect(c.assert).toEqual({
+      tools_exact: ['bash', 'read'],
+      tools_not_called: ['write'],
+      output_not_contains: ['抱歉'],
+      output_matches: ['^okay'],
+      tool_args_contains: [{ name: 'bash', contains: '"command"' }],
+      tool_result_contains: [{ name: 'bash', contains: 'total' }],
+    })
   })
 })

@@ -165,6 +165,59 @@ describe('tool/result error extraction', () => {
   })
 })
 
+describe('toolCalls / toolResults records', () => {
+  it('tool/call records arguments as JSON string (string args kept as-is)', () => {
+    const t = collectFromJsonl(frame('tool/call', { callId: 'c1', name: 'write', arguments: '{"path":"/tmp/a.txt","content":"hi"}' }))
+    expect(t.toolCalls).toEqual([{ name: 'write', callId: 'c1', argsJson: '{"path":"/tmp/a.txt","content":"hi"}' }])
+    expect(t.toolsCalled).toEqual(['write'])
+  })
+
+  it('tool/call object arguments are JSON.stringified; missing arguments become empty string', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'c1', name: 'a', arguments: { path: '/x' } }),
+        frame('tool/call', { name: 'b' }),
+      ].join('\n'),
+    )
+    expect(t.toolCalls).toEqual([
+      { name: 'a', callId: 'c1', argsJson: '{"path":"/x"}' },
+      { name: 'b', callId: undefined, argsJson: '' },
+    ])
+  })
+
+  it('tool/result text: real on-disk shape (message.content[] tool-result block)', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'c1', name: 'bash' }),
+        frame('tool/result', {
+          message: {
+            source: { kind: 'tool', callId: 'c1' },
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'c1',
+                content: [{ type: 'text', text: 'total 42' }],
+                isError: false,
+              },
+            ],
+          },
+        }),
+      ].join('\n'),
+    )
+    expect(t.toolResults).toEqual([{ name: 'bash', callId: 'c1', text: 'total 42' }])
+  })
+
+  it('tool/result text: legacy top-level content shape', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'c9', name: 'read' }),
+        frame('tool/result', { callId: 'c9', isError: false, content: [{ type: 'text', text: 'file body' }] }),
+      ].join('\n'),
+    )
+    expect(t.toolResults).toEqual([{ name: 'read', callId: 'c9', text: 'file body' }])
+  })
+})
+
 describe('extractText', () => {
   it('accepts a plain string message', () => {
     expect(extractText('hello')).toBe('hello')

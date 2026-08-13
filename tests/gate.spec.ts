@@ -8,6 +8,8 @@ function caseResult(name: string, status: CaseStatus): CaseResult {
     status,
     failures: status === 'fail' ? ['boom'] : [],
     toolsCalled: [],
+    toolCalls: [],
+    toolResults: [],
     finalText: '',
     steps: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 },

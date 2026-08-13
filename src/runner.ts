@@ -56,12 +56,34 @@ export function parseCase(text: string, file: string): EvalCase {
     if (typeof a.turn_end !== 'string') throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.turn_end' must be a string`)
     assert.turn_end = a.turn_end
   }
-  for (const key of ['tools_called', 'output_contains'] as const) {
+  for (const key of ['tools_called', 'tools_exact', 'tools_not_called', 'output_contains', 'output_not_contains', 'output_matches'] as const) {
     if (a[key] !== undefined) {
       if (!Array.isArray(a[key]) || (a[key] as unknown[]).some((v) => typeof v !== 'string')) {
         throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.${key}' must be a list of strings`)
       }
       assert[key] = a[key] as string[]
+    }
+  }
+  // output_matches 的正则在解析阶段就编译验证，非法正则报带用例名的错
+  for (const pattern of assert.output_matches ?? []) {
+    try {
+      new RegExp(pattern)
+    } catch (err) {
+      throw new Error(`${PREFIX}: failed to parse case file '${file}' (case '${raw.name}'): 'assert.output_matches' invalid regex '${pattern}': ${(err as Error).message}`)
+    }
+  }
+  for (const key of ['tool_args_contains', 'tool_result_contains'] as const) {
+    if (a[key] !== undefined) {
+      const list = a[key]
+      if (
+        !Array.isArray(list) ||
+        list.some(
+          (v) => !v || typeof v !== 'object' || typeof (v as { name?: unknown }).name !== 'string' || typeof (v as { contains?: unknown }).contains !== 'string',
+        )
+      ) {
+        throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.${key}' must be a list of { name, contains } (both strings)`)
+      }
+      assert[key] = list as { name: string; contains: string }[]
     }
   }
   for (const key of ['max_steps', 'max_tokens'] as const) {
@@ -257,6 +279,8 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       name: evalCase.name,
       failures: [],
       toolsCalled: [],
+      toolCalls: [],
+      toolResults: [],
       finalText: '',
       steps: 0,
       tokens: emptyTokenUsage(),
@@ -282,6 +306,8 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         failures,
         turnEnd: trace.turnEnd,
         toolsCalled: trace.toolsCalled,
+        toolCalls: trace.toolCalls,
+        toolResults: trace.toolResults,
         finalText: trace.finalText,
         steps: trace.steps,
         tokens: trace.tokens,

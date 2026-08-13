@@ -48,6 +48,16 @@ assert:
   max_steps: 8                  # 可选，step/end 数上限
   max_tokens: 50000             # 可选，token 上限（input+output+reasoning；cacheRead/cacheWrite 不计入，防多步膨胀）
   no_tool_errors: true          # 可选，任何 tool/result 硬错误（data.error / isError）即 fail
+  tools_exact: [tool_a]         # 可选，工具调用名称序列须完全一致（长度+顺序+内容）
+  tools_not_called: [tool_b]    # 可选，列出的工具一次都不能被调用
+  output_not_contains: ["抱歉"]  # 可选，最终 assistant 文本不得包含任一子串
+  output_matches: ["^okay"]     # 可选，最终 assistant 文本须匹配全部正则（解析期预编译校验）
+  tool_args_contains:           # 可选，指定工具至少一次调用的参数 JSON 串包含子串
+    - name: tool_a
+      contains: '"path"'
+  tool_result_contains:         # 可选，指定工具至少一次结果的文本包含子串
+    - name: tool_a
+      contains: total
 ```
 
 报告里的 token 是分字段聚合：`total (in X+out Y+reas Z; cacheR A+cacheW B)`——prompt cache
@@ -59,9 +69,9 @@ assert:
 [`cases/real/`](cases/real/) 收录了 10 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
 其中 `08-read-image.yml` 演示 `no_tool_errors` 如何拦下「工具报错但 agent 兜底答对」的假通过（在无视觉能力的模型上该用例预期 fail，属正常）。
 
-**解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量序列、
-flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不支持 `- key: value`
-嵌套 map 序列、锚点、多文档；解析失败报带行号的 `eval_run:` 前缀错误。
+**解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量/map 序列、
+flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不支持锚点、多文档；
+解析失败报带行号的 `eval_run:` 前缀错误。
 
 ## 工具参数
 

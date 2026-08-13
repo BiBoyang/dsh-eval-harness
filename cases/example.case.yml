@@ -6,3 +6,5 @@ assert:
   max_steps: 4
   max_tokens: 20000
   no_tool_errors: true           # 工具返回硬错误（tool/result 带 error/isError）即 fail，防"兜底假通过"
+  tools_exact: []                # 恰好零工具调用（长度+顺序+内容全等；需要精确锁调用序列时用）
+  output_not_contains: ["抱歉"]   # 最终文本不得出现"抱歉"（兜底/拒绝话术黑名单）

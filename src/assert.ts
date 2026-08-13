@@ -27,10 +27,75 @@ export function checkAssertions(assert: EvalAssert, trace: CollectedTrace): stri
     )
   }
 
+  if (assert.tools_exact !== undefined) {
+    const actual = trace.toolsCalled
+    const expected = assert.tools_exact
+    if (actual.length !== expected.length || !expected.every((n, i) => actual[i] === n)) {
+      failures.push(`tools_exact: expected exactly [${expected.join(', ')}], got [${actual.join(', ')}]`)
+    }
+  }
+
+  if (assert.tools_not_called !== undefined) {
+    const hit = assert.tools_not_called.filter((n) => trace.toolsCalled.includes(n))
+    if (hit.length > 0) {
+      failures.push(`tools_not_called: forbidden tool(s) called: [${hit.join(', ')}] (actual calls: [${trace.toolsCalled.join(', ')}])`)
+    }
+  }
+
   if (assert.output_contains !== undefined) {
     for (const kw of assert.output_contains) {
       if (!trace.finalText.includes(kw)) {
         failures.push(`output_contains: final assistant text missing '${kw}'`)
+      }
+    }
+  }
+
+  if (assert.output_not_contains !== undefined) {
+    for (const kw of assert.output_not_contains) {
+      if (trace.finalText.includes(kw)) {
+        failures.push(`output_not_contains: final assistant text contains forbidden '${kw}'`)
+      }
+    }
+  }
+
+  if (assert.output_matches !== undefined) {
+    for (const pattern of assert.output_matches) {
+      // 正则合法性已在 parseCase 阶段校验；这里兜底防手工构造的断言对象
+      let re: RegExp
+      try {
+        re = new RegExp(pattern)
+      } catch {
+        failures.push(`output_matches: invalid regex '${pattern}'`)
+        continue
+      }
+      if (!re.test(trace.finalText)) {
+        failures.push(`output_matches: final assistant text does not match /${pattern}/`)
+      }
+    }
+  }
+
+  if (assert.tool_args_contains !== undefined) {
+    for (const p of assert.tool_args_contains) {
+      const calls = trace.toolCalls.filter((c) => c.name === p.name)
+      if (calls.length === 0) {
+        failures.push(`tool_args_contains: tool '${p.name}' was never called`)
+      } else if (!calls.some((c) => c.argsJson.includes(p.contains))) {
+        failures.push(
+          `tool_args_contains: no call to '${p.name}' with arguments containing '${p.contains}' (got ${calls.length} call(s): ${calls.map((c) => c.argsJson || '<no args>').join(' | ')})`,
+        )
+      }
+    }
+  }
+
+  if (assert.tool_result_contains !== undefined) {
+    for (const p of assert.tool_result_contains) {
+      const results = trace.toolResults.filter((r) => r.name === p.name)
+      if (results.length === 0) {
+        failures.push(`tool_result_contains: tool '${p.name}' was never called (no result recorded)`)
+      } else if (!results.some((r) => r.text.includes(p.contains))) {
+        failures.push(
+          `tool_result_contains: no result of '${p.name}' containing '${p.contains}' (got ${results.length} result(s))`,
+        )
       }
     }
   }

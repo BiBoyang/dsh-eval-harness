@@ -25,12 +25,25 @@ assert:
   max_steps: 8                   # 可选，step/end 数上限
   max_tokens: 50000              # 可选，token 上限（input+output+reasoning；cacheRead/cacheWrite 不计入，防多步膨胀）
   no_tool_errors: true           # 可选，任何工具硬错误（tool/result 带 error/isError）即 fail
+  tools_exact: [tool_a]          # 可选，工具调用名称序列须完全一致（长度+顺序+内容）
+  tools_not_called: [tool_b]     # 可选，列出的工具一次都不能被调用
+  output_not_contains: ["抱歉"]   # 可选，最终文本不得包含任一子串
+  output_matches: ["^okay"]      # 可选，最终文本须匹配全部正则（解析期预编译，非法正则报错）
+  tool_args_contains:            # 可选，指定工具至少一次调用的参数 JSON 串包含子串
+    - name: tool_a
+      contains: '"path"'
+  tool_result_contains:          # 可选，指定工具至少一次结果的文本包含子串
+    - name: tool_a
+      contains: total
 ```
 
 ## 编写要点
 
 - **断言写可观测行为，不写实现细节**：`tools_called` 断「必须调用什么」，不要断
   完整调用序列（保序子序列即可，agent 多调别的工具不算失败）。
+  确实需要「恰好这些调用、一次不多」时才用 `tools_exact`；反向禁用某工具用
+  `tools_not_called`；锁工具入参/返回内容用 `tool_args_contains` /
+  `tool_result_contains`（按工具名匹配至少一次调用/结果，子串包含即可）。
 - **prompt 自包含**：headless 一次性会话，没有上下文；把插件名、输入数据、
   期望输出关键词都写进 prompt。
 - **`output_contains` 选稳定关键词**：挑 agent 正常完成时几乎必出现的词
@@ -57,6 +70,6 @@ assert:
 
 ## 解析约束（重要）
 
-harness 用零依赖 YAML 子集解析器：支持块级 map、`- ` 标量序列、`[a, b]` flow
-序列、单双引号、数字/布尔/null、`|`/`>` 块标量、注释。**不支持** `- key: value`
-嵌套 map 序列、锚点/别名、多文档——写用例时避免。解析失败会报带行号的错误。
+harness 用零依赖 YAML 子集解析器：支持块级 map、`- ` 标量/map 序列（map 项续行
+缩进对齐到 `- ` 之后）、`[a, b]` flow 序列、单双引号、数字/布尔/null、`|`/`>`
+块标量、注释。**不支持**锚点/别名、多文档——写用例时避免。解析失败会报带行号的错误。

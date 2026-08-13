@@ -3,7 +3,7 @@
  *
  * 仅支持评测用例文件需要的子集：
  * - 块级 map（`key: value` / `key:` + 缩进子节点）
- * - 块级序列（`- item`，仅标量/flow 元素；不支持 `- key: value` 嵌套 map）
+ * - 块级序列（`- item`；元素为标量/flow，或以 `- key: value` 起头的 map，map 续行缩进对齐到 `- ` 之后）
  * - flow 序列（`[a, b, "c"]`，元素为标量，不支持嵌套 flow）
  * - 标量：双引号（\" \\ \n \t 转义）、单引号（'' 转义）、plain string、number、true/false/null
  * - 块标量 `|`（保留换行）/ `>`（折叠为空格），支持 `-`/`+` chomping
@@ -261,7 +261,12 @@ export function parseYamlSubset(src: string): unknown {
         result.push(v)
         i = next
       } else if (/^[^"'\[][^:]*:\s/.test(after) || /^[^"'\[][^:]*:$/.test(after)) {
-        fail(j + 1, `sequence item maps ('- key: value') not supported: '${after}'`)
+        // 序列项 map：`- key: value`。把 `- ` 改写为两个空格（map 内容列 = ind + 2），
+        // 原地按 map 重解析本行及其续行；行号不变，错误定位不受影响。
+        lines[j] = ' '.repeat(ind + 2) + after
+        const [v, next] = parseMap(j, ind + 2)
+        result.push(v)
+        i = next
       } else {
         result.push(parseScalar(after, j + 1))
       }
