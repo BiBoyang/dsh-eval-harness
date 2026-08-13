@@ -17,7 +17,7 @@ export interface RunOptions {
   profile?: string
   /** 单条用例子进程超时，默认 600000ms */
   timeoutMs?: number
-  /** dsh 可执行文件（默认 env DSH_BIN 或 PATH 里的 dsh） */
+  /** dsh 可执行命令（默认 env DSH_BIN 或 PATH 里的 dsh；支持 'npx -y @deepseek-ai/dsh' 带参数形式，按空白拆分） */
   dshBin?: string
 }
 
@@ -94,16 +94,35 @@ export async function loadCases(casesDir: string): Promise<{ file: string; evalC
   return cases
 }
 
-/** 定位 dsh 可执行文件；找不到 throw `eval_run:` 前缀错误 */
-export function resolveDshBin(dshBin?: string): string {
-  const bin = dshBin ?? process.env.DSH_BIN ?? 'dsh'
-  const probe = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 15000 })
+/** dsh 调用命令：可执行文件 + 固定前缀参数（支持 `npx -y @deepseek-ai/dsh` 这类形式） */
+export interface DshCommand {
+  bin: string
+  prefixArgs: string[]
+}
+
+/**
+ * 把 dsh_bin 配置拆成 argv（按空白拆分，不走 shell，不支持引号——
+ * 带空格的路径请改用 DSH_BIN 指向无空格路径或包装脚本）。
+ */
+export function splitDshBin(dshBin: string): DshCommand {
+  const parts = dshBin.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) {
+    throw new Error(`${PREFIX}: dsh_bin is empty`)
+  }
+  return { bin: parts[0], prefixArgs: parts.slice(1) }
+}
+
+/** 定位 dsh 可执行命令；找不到 throw `eval_run:` 前缀错误 */
+export function resolveDshCommand(dshBin?: string): DshCommand {
+  const configured = dshBin ?? process.env.DSH_BIN ?? 'dsh'
+  const cmd = splitDshBin(configured)
+  const probe = spawnSync(cmd.bin, [...cmd.prefixArgs, '--version'], { encoding: 'utf8', timeout: 60_000 })
   if (probe.error) {
     throw new Error(
-      `${PREFIX}: dsh executable not found ('${bin}'): ${probe.error.message}. Install dsh or set DSH_BIN / pass dsh_bin.`,
+      `${PREFIX}: dsh executable not found ('${configured}'): ${probe.error.message}. Install dsh or set DSH_BIN / pass dsh_bin (e.g. 'npx -y @deepseek-ai/dsh').`,
     )
   }
-  return bin
+  return cmd
 }
 
 function slugify(name: string): string {
@@ -213,7 +232,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   const sessionBase = resolve(options.sessionRoot ?? join(outputDir, '.sessions'))
   const workspaceBase = join(outputDir, '.workspace')
 
-  const bin = resolveDshBin(options.dshBin)
+  const dsh = resolveDshCommand(options.dshBin)
   const cases = await loadCases(casesDir)
   await mkdir(outputDir, { recursive: true })
   await mkdir(sessionBase, { recursive: true })
@@ -236,7 +255,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       tokens: { input: 0, output: 0 },
     }
     try {
-      const proc = await runOne(bin, buildDshArgs(profile, overlayPath, evalCase.prompt), workspace, timeoutMs)
+      const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
       if (proc.timedOut) {
         results.push({ ...base, status: 'error', error: `dsh subprocess timed out after ${timeoutMs}ms`, durationMs: Date.now() - startedAt })
         continue

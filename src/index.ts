@@ -40,6 +40,11 @@ export function apply(ctx: Context): void {
           default: 600000,
           description: 'Per-case subprocess timeout in milliseconds (default 600000).',
         },
+        dsh_bin: {
+          type: 'string',
+          description:
+            "dsh executable command, split on whitespace (default: env DSH_BIN or 'dsh' from PATH). Use 'npx -y @deepseek-ai/dsh' when dsh is not installed globally.",
+        },
       },
       output: { schema: { type: 'string' }, render: renderJsonText },
       execute: async (args) => {
@@ -49,6 +54,7 @@ export function apply(ctx: Context): void {
           sessionRoot: args.session_root === undefined ? undefined : String(args.session_root),
           profile: args.profile === undefined ? undefined : String(args.profile),
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+          dshBin: args.dsh_bin === undefined ? undefined : String(args.dsh_bin),
         })
         return JSON.stringify({
           summary: report.summary,

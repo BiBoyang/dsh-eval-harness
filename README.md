@@ -66,6 +66,7 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | `session_root` | string | 否 | `<output_dir>/.sessions` | 隔离的 session 落盘根 |
 | `profile` | string | 否 | `headless` | dsh profile |
 | `timeout_ms` | integer | 否 | `600000` | 单条用例子进程超时 |
+| `dsh_bin` | string | 否 | `$DSH_BIN` 或 `dsh` | dsh 可执行命令，按空白拆分；本机无全局 dsh 时用 `npx -y @deepseek-ai/dsh` |
 
 输出：JSON 文本（summary + 报告路径 + 各用例状态）。错误一律 throw
 `eval_run:` 前缀消息（找不到 dsh 可执行文件、用例解析失败等）。

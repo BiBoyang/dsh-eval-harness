@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildOverlayYaml } from '../src/runner.ts'
+import { buildDshArgs, buildOverlayYaml, splitDshBin } from '../src/runner.ts'
 
 describe('buildOverlayYaml', () => {
   it('overrides session-persistence-jsonl row with isolated root and compression none', () => {
@@ -24,6 +24,27 @@ describe('buildOverlayYaml', () => {
   it('escapes roots containing quotes/backslashes as a double-quoted YAML scalar', () => {
     const yaml = buildOverlayYaml('/tmp/we"ird\\root')
     expect(yaml).toContain('root: "/tmp/we\\"ird\\\\root"')
+  })
+})
+
+describe('splitDshBin', () => {
+  it('plain executable has no prefix args', () => {
+    expect(splitDshBin('dsh')).toEqual({ bin: 'dsh', prefixArgs: [] })
+  })
+  it('splits npx-style commands into bin + prefix args', () => {
+    expect(splitDshBin('npx -y @deepseek-ai/dsh')).toEqual({
+      bin: 'npx',
+      prefixArgs: ['-y', '@deepseek-ai/dsh'],
+    })
+  })
+  it('tolerates extra whitespace', () => {
+    expect(splitDshBin('  npx   -y   @deepseek-ai/dsh ')).toEqual({
+      bin: 'npx',
+      prefixArgs: ['-y', '@deepseek-ai/dsh'],
+    })
+  })
+  it('throws eval_run: prefixed error on empty input', () => {
+    expect(() => splitDshBin('   ')).toThrow(/^eval_run: dsh_bin is empty$/)
   })
 })
 
