@@ -1,0 +1,11 @@
+name: bash-tool
+prompt: |
+  请使用 bash 工具执行命令 `printf 'BASHOK-7f3a'`，然后把该命令的标准输出原样回复给我。
+  必须真实调用 bash 工具取得输出，不要凭记忆编造；最终回复里必须包含 BASHOK-7f3a。
+require_plugins: ["@deepseek-ai/dsh-tool-bash"]
+assert:
+  turn_end: completed
+  tools_called: ["bash"]
+  output_contains: ["BASHOK-7f3a"]
+  max_steps: 8
+  max_tokens: 30000

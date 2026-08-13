@@ -1,0 +1,14 @@
+name: fs-search
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 write 工具创建文件 a.txt，内容为三行：alpha、beta、GAMMA-3e8f；
+  2. 用 grep 工具在 a.txt 中搜索 GAMMA；
+  3. 把 grep 命中的那一行内容原样回复给我。
+  最终回复里必须包含 GAMMA-3e8f。
+require_plugins: ["@deepseek-ai/dsh-tool-fs-search"]
+assert:
+  turn_end: completed
+  tools_called: ["write", "grep"]
+  output_contains: ["GAMMA-3e8f"]
+  max_steps: 12
+  max_tokens: 30000

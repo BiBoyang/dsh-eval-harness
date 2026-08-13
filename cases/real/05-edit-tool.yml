@@ -1,0 +1,14 @@
+name: edit-tool
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 write 工具创建文件 note.txt，内容只有一行：hello world；
+  2. 用 edit 工具把该文件中的 world 替换为 there；
+  3. 用 read 工具读回该文件，并把读到的内容原样回复给我。
+  最终回复里必须包含 hello there。
+require_plugins: ["@deepseek-ai/dsh-tool-fs"]
+assert:
+  turn_end: completed
+  tools_called: ["write", "edit", "read"]
+  output_contains: ["hello there"]
+  max_steps: 12
+  max_tokens: 30000

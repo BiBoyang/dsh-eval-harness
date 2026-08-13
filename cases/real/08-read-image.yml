@@ -1,0 +1,18 @@
+name: read-image
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 bash 工具执行这条命令生成一张 1x1 像素的 PNG 图片：
+     printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' | base64 -d > pixel.png
+  2. 用 read_image 工具读取 pixel.png；
+  3. 告诉我这张图片的像素尺寸（宽 x 高）。最终回复里必须包含 1x1。
+require_plugins: ["@deepseek-ai/dsh-tool-fs", "@deepseek-ai/dsh-tool-bash"]
+assert:
+  turn_end: completed
+  tools_called: ["bash", "read_image"]
+  output_contains: ["1x1"]
+  # 锁死「必须靠 read_image 真实成功」：read_image 报错（如当前模型无图像输入能力）时
+  # 即使 agent 用 bash 兜底答对 1x1 也判 fail——防止「假通过」。
+  # 预期：在无视觉能力的模型上此用例 fail，这正是要拦截的回归。
+  no_tool_errors: true
+  max_steps: 12
+  max_tokens: 40000

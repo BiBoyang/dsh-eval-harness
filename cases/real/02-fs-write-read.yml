@@ -1,0 +1,14 @@
+name: fs-write-read
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 write 工具在当前工作目录创建文件 marker.txt，内容为 FSMARK-9c2e；
+  2. 用 read 工具读回该文件；
+  3. 把 read 读到的内容原样回复给我。
+  最终回复里必须包含 FSMARK-9c2e。
+require_plugins: ["@deepseek-ai/dsh-tool-fs"]
+assert:
+  turn_end: completed
+  tools_called: ["write", "read"]
+  output_contains: ["FSMARK-9c2e"]
+  max_steps: 10
+  max_tokens: 30000

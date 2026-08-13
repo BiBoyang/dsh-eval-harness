@@ -1,0 +1,11 @@
+name: web-search
+prompt: |
+  请用 web_search 工具搜索关键词「DeepSeek」，然后把搜索结果的前几条标题或摘要回复给我。
+  必须真实调用 web_search 工具；最终回复里必须包含 deepseek（不区分大小写）。
+require_plugins: ["@deepseek-ai/dsh-tool-web", "@deepseek-ai/dsh-web-search-deepseek"]
+assert:
+  turn_end: completed
+  tools_called: ["web_search"]
+  output_contains: ["deepseek"]
+  max_steps: 8
+  max_tokens: 40000

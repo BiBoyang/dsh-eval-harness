@@ -1,0 +1,11 @@
+name: workflow-fanout
+prompt: |
+  请用 workflow 工具运行一个由你编写的最小工作流脚本：fan out 两个子代理，第一个子代理回复 AAA，第二个子代理回复 BBB，然后你汇总两者的结果。
+  最终回复里必须同时包含 AAA 和 BBB。
+require_plugins: ["@deepseek-ai/dsh-tool-workflow"]
+assert:
+  turn_end: completed
+  tools_called: ["workflow"]
+  output_contains: ["AAA", "BBB"]
+  max_steps: 12
+  max_tokens: 80000

@@ -1,0 +1,12 @@
+name: subagent-delegate
+prompt: |
+  请用 subagent 工具派发一个子代理完成任务，并把子代理的最终回复原样转述给我。
+  给子代理的任务是：直接回复固定字符串 SUBAOK-5b1d，不要调用任何工具、不要输出其他内容。
+  最终回复里必须包含 SUBAOK-5b1d。
+require_plugins: ["@deepseek-ai/dsh-tool-subagent"]
+assert:
+  turn_end: completed
+  tools_called: ["subagent"]
+  output_contains: ["SUBAOK-5b1d"]
+  max_steps: 12
+  max_tokens: 60000

@@ -1,0 +1,14 @@
+name: glob-tool
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 write 工具创建三个文件：foo-1.txt、foo-2.txt、bar.txt（每个文件内容各写一行即可）；
+  2. 用 glob 工具匹配模式 foo-*.txt；
+  3. 把 glob 返回的文件列表原样回复给我。
+  最终回复里必须同时包含 foo-1.txt 和 foo-2.txt。
+require_plugins: ["@deepseek-ai/dsh-tool-fs-search"]
+assert:
+  turn_end: completed
+  tools_called: ["write", "glob"]
+  output_contains: ["foo-1.txt", "foo-2.txt"]
+  max_steps: 12
+  max_tokens: 30000

@@ -55,6 +55,8 @@ assert:
 命中情况一眼可见；`max_tokens` 对 total 生效（缓存 token 占上下文也计费，不漏计）。
 
 示例见 [`cases/example.case.yml`](cases/example.case.yml)。
+[`cases/real/`](cases/real/) 收录了 10 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
+其中 `08-read-image.yml` 演示 `no_tool_errors` 如何拦下「工具报错但 agent 兜底答对」的假通过（在无视觉能力的模型上该用例预期 fail，属正常）。
 
 **解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量序列、
 flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不支持 `- key: value`
