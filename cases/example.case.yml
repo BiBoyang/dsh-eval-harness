@@ -1,0 +1,7 @@
+name: echo-hello
+prompt: "请直接回复：hello eval（不要调用任何工具，不要输出其他内容）"
+assert:
+  turn_end: completed
+  output_contains: ["hello"]
+  max_steps: 4
+  max_tokens: 20000

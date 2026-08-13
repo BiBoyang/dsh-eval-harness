@@ -1,0 +1,4 @@
+# dsh bundle patch: 把本插件插进 profile 层栈（0806+）。
+- insert:
+    - id: dsh-eval-harness
+      name: 'dsh-eval-harness'

@@ -1,0 +1,6 @@
+# esbuild（vitest 依赖）的安装脚本放行为 true（pnpm ≥10 阻止依赖 build 脚本时的白名单）
+allowBuilds:
+  esbuild: true
+# @deepseek-ai/* peer 由 DSH profile pnpm 闭包注入，不在公共 npm；禁止自动安装 peer
+# （pnpm 10+ 该配置从 .npmrc 迁至 pnpm-workspace.yaml）
+autoInstallPeers: false
