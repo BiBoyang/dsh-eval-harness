@@ -6,6 +6,8 @@ require_plugins: ["@deepseek-ai/dsh-tool-web", "@deepseek-ai/dsh-web-search-deep
 assert:
   turn_end: completed
   tools_called: ["web_search"]
-  output_contains: ["deepseek"]
+  # 品牌名大小写不确定（DeepSeek/deepseek），output_contains 区分大小写，
+  # 改用 output_matches 正则落实 prompt 里「不区分大小写」的意图。
+  output_matches: ["[Dd]eep[Ss]eek"]
   max_steps: 8
   max_tokens: 40000
