@@ -104,5 +104,11 @@ describe('parseCase validation', () => {
     expect(() => parseCase('name: x\nprompt: p\nrequire_plugins: [1]', 'f.yml')).toThrow(/require_plugins/)
     expect(() => parseCase('name: x\nprompt: p\nassert:\n  max_steps: -1', 'f.yml')).toThrow(/max_steps.*non-negative integer/)
     expect(() => parseCase('name: x\nprompt: p\nassert:\n  tools_called: a', 'f.yml')).toThrow(/tools_called.*list of strings/)
+    expect(() => parseCase('name: x\nprompt: p\nassert:\n  no_tool_errors: yes', 'f.yml')).toThrow(/no_tool_errors.*boolean/)
+  })
+
+  it('accepts no_tool_errors boolean', () => {
+    const c = parseCase('name: x\nprompt: p\nassert:\n  no_tool_errors: true', 'f.yml')
+    expect(c.assert.no_tool_errors).toBe(true)
   })
 })

@@ -8,8 +8,10 @@ export interface EvalAssert {
   output_contains?: string[]
   /** step/end 事件数上限 */
   max_steps?: number
-  /** 聚合 token（input+output）上限 */
+  /** 聚合 token 总量（input+output+cacheRead+cacheWrite+reasoning）上限 */
   max_tokens?: number
+  /** true 时任何工具硬错误（tool/result 带 error 或 isError）即 fail */
+  no_tool_errors?: boolean
 }
 
 /** 单条评测用例 */
@@ -20,10 +22,30 @@ export interface EvalCase {
   assert: EvalAssert
 }
 
-/** 聚合 token 用量 */
+/**
+ * 聚合 token 用量（分字段；与 DSH TokenUsage 对齐，计数互斥：
+ * inputTokens 仅未缓存输入，缓存部分单独计入 cacheRead/cacheWrite）。
+ * total = 全部字段相加——缓存命中 token 同样占上下文/计费，评测语义不能漏。
+ */
 export interface TokenUsage {
   input: number
   output: number
+  cacheRead: number
+  cacheWrite: number
+  reasoning: number
+  total: number
+}
+
+/** 工具硬错误（tool/result 的 data.error 或 isError） */
+export interface ToolError {
+  /** 工具名（经 tool/call 的 callId 关联；拿不到则为 callId 或 '<unknown>'） */
+  name: string
+  /** 错误摘要（截断到 200 字符） */
+  error: string
+}
+
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 }
 }
 
 /** collector 从 session.jsonl 提取的观测结果 */
@@ -36,8 +58,10 @@ export interface CollectedTrace {
   finalText: string
   /** step/end 事件数 */
   steps: number
-  /** 累加 assistant/message 的 usage.inputTokens/outputTokens */
+  /** 累加 assistant/message 的 usage 各字段（含 cacheRead/cacheWrite/reasoning） */
   tokens: TokenUsage
+  /** tool/result 的硬错误列表（无则为空数组） */
+  toolErrors: ToolError[]
   /** 成功解析的事件帧数 */
   events: number
   /** 跳过的不良行数 */
@@ -59,6 +83,8 @@ export interface CaseResult {
   finalText: string
   steps: number
   tokens: TokenUsage
+  /** tool/result 的硬错误列表（无则为空数组） */
+  toolErrors: ToolError[]
   durationMs: number
 }
 

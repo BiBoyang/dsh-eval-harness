@@ -9,6 +9,11 @@ function mdEscape(s: string): string {
   return s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 }
 
+/** tokens 单元格：`total (in+out+cacheR+cacheW+reas)`，cache 命中一眼可见 */
+function formatTokens(t: RunReport['cases'][number]['tokens']): string {
+  return `${t.total} (${t.input}+${t.output}+${t.cacheRead}+${t.cacheWrite}+${t.reasoning})`
+}
+
 /** Markdown 报告（report.md）：汇总 + 用例表 + 失败明细 */
 export function renderMarkdown(report: RunReport): string {
   const lines: string[] = [
@@ -18,12 +23,12 @@ export function renderMarkdown(report: RunReport): string {
     `- profile：${report.profile}`,
     `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}`,
     '',
-    '| 用例 | 结果 | steps | tokens (in/out) | turn_end | 耗时 ms |',
+    '| 用例 | 结果 | steps | tokens total (in+out+cacheR+cacheW+reas) | turn_end | 耗时 ms |',
     '| --- | --- | --- | --- | --- | --- |',
   ]
   for (const c of report.cases) {
     lines.push(
-      `| ${mdEscape(c.name)} | ${c.status.toUpperCase()} | ${c.steps} | ${c.tokens.input}/${c.tokens.output} | ${c.turnEnd ?? '-'} | ${c.durationMs} |`,
+      `| ${mdEscape(c.name)} | ${c.status.toUpperCase()} | ${c.steps} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${c.durationMs} |`,
     )
   }
   const failed = report.cases.filter((c) => c.status !== 'pass')
@@ -33,6 +38,7 @@ export function renderMarkdown(report: RunReport): string {
       lines.push(`### ${c.name}`, '')
       if (c.error) lines.push(`- error: ${mdEscape(c.error)}`)
       for (const f of c.failures) lines.push(`- ${mdEscape(f)}`)
+      for (const e of c.toolErrors) lines.push(`- tool error: ${mdEscape(e.name)}: ${mdEscape(e.error)}`)
       lines.push('')
     }
   }

@@ -46,8 +46,13 @@ assert:
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
   output_contains: ["关键词"]    # 最终 assistant 文本须包含全部
   max_steps: 8                  # 可选，step/end 数上限
-  max_tokens: 50000             # 可选，聚合 token（input+output）上限
+  max_tokens: 50000             # 可选，聚合 token 总量（input+output+cacheRead+cacheWrite+reasoning）上限
+  no_tool_errors: true          # 可选，任何 tool/result 硬错误（data.error / isError）即 fail
 ```
+
+报告里的 token 是分字段聚合：`total (in+out+cacheR+cacheW+reas)`——prompt cache
+命中时 `inputTokens` 只剩零头、真实输入在 `cacheReadTokens`，分字段展示让 cache
+命中情况一眼可见；`max_tokens` 对 total 生效（缓存 token 占上下文也计费，不漏计）。
 
 示例见 [`cases/example.case.yml`](cases/example.case.yml)。
 

@@ -42,8 +42,30 @@ describe('collectFromJsonl', () => {
     expect(collectFromJsonl(FIXTURE).steps).toBe(2)
   })
 
-  it('aggregates usage.inputTokens/outputTokens across assistant messages', () => {
-    expect(collectFromJsonl(FIXTURE).tokens).toEqual({ input: 400, output: 70 })
+  it('aggregates usage fields across assistant messages (incl. cache/reasoning)', () => {
+    expect(collectFromJsonl(FIXTURE).tokens).toEqual({
+      input: 400,
+      output: 70,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 470,
+    })
+  })
+
+  it('prompt-cache regression: cacheRead/cacheWrite/reasoning tokens are aggregated into total', () => {
+    // 真实压测场景：第二次跑命中 prompt cache，inputTokens 只剩 28，
+    // 真实输入在 cacheReadTokens 里——漏计会让 max_tokens 严重低估。
+    const t = collectFromJsonl(
+      [
+        frame('assistant/message', { message: 'a', usage: { inputTokens: 8000, outputTokens: 50 } }),
+        frame('assistant/message', {
+          message: 'b',
+          usage: { inputTokens: 28, outputTokens: 90, cacheReadTokens: 8064, cacheWriteTokens: 120, reasoningTokens: 33 },
+        }),
+      ].join('\n'),
+    )
+    expect(t.tokens).toEqual({ input: 8028, output: 140, cacheRead: 8064, cacheWrite: 120, reasoning: 33, total: 16385 })
   })
 
   it('ignores unrelated frame types', () => {
@@ -68,12 +90,51 @@ describe('collectFromJsonl', () => {
   it('tolerates frames without usage or message text', () => {
     const t = collectFromJsonl(frame('assistant/message', { usage: { inputTokens: 5 } }))
     expect(t.finalText).toBe('')
-    expect(t.tokens).toEqual({ input: 5, output: 0 })
+    expect(t.tokens).toEqual({ input: 5, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 5 })
   })
 
   it('empty input yields empty trace', () => {
     const t = collectFromJsonl('')
-    expect(t).toMatchObject({ turnEnd: undefined, toolsCalled: [], finalText: '', steps: 0, events: 0 })
+    expect(t).toMatchObject({ turnEnd: undefined, toolsCalled: [], finalText: '', steps: 0, toolErrors: [], events: 0 })
+  })
+})
+
+describe('tool/result error extraction', () => {
+  it('collects data.error objects, resolving tool name via callId', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'call-1', name: 'write' }),
+        frame('tool/result', { callId: 'call-1', error: { name: 'ToolOutcomeUnknownError', code: 'TOOL_OUTCOME_UNKNOWN' } }),
+      ].join('\n'),
+    )
+    expect(t.toolErrors).toEqual([{ name: 'write', error: 'ToolOutcomeUnknownError: TOOL_OUTCOME_UNKNOWN' }])
+  })
+
+  it('collects isError results, using content text as summary', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'c2', name: 'bash' }),
+        frame('tool/result', { callId: 'c2', isError: true, content: [{ type: 'text', text: 'exit code 1: permission denied' }] }),
+      ].join('\n'),
+    )
+    expect(t.toolErrors).toEqual([{ name: 'bash', error: 'exit code 1: permission denied' }])
+  })
+
+  it('falls back to callId / <unknown> when name is unresolvable', () => {
+    const t = collectFromJsonl(frame('tool/result', { callId: 'orphan', error: 'boom' }))
+    expect(t.toolErrors).toEqual([{ name: 'orphan', error: 'boom' }])
+    const t2 = collectFromJsonl(frame('tool/result', { error: 'boom' }))
+    expect(t2.toolErrors).toEqual([{ name: '<unknown>', error: 'boom' }])
+  })
+
+  it('clean tool/result frames produce no toolErrors', () => {
+    const t = collectFromJsonl(
+      [
+        frame('tool/call', { callId: 'c1', name: 'read' }),
+        frame('tool/result', { callId: 'c1', isError: false, content: [{ type: 'text', text: 'ok' }] }),
+      ].join('\n'),
+    )
+    expect(t.toolErrors).toEqual([])
   })
 })
 

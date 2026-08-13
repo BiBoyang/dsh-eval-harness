@@ -8,7 +8,8 @@ function trace(overrides: Partial<CollectedTrace> = {}): CollectedTrace {
     toolsCalled: ['tool_a', 'tool_b', 'tool_c'],
     finalText: '结果是 hello eval，已完成',
     steps: 3,
-    tokens: { input: 1000, output: 500 },
+    tokens: { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 1500 },
+    toolErrors: [],
     events: 10,
     skippedLines: 0,
     ...overrides,
@@ -71,10 +72,37 @@ describe('checkAssertions', () => {
     expect(failures[0]).toContain('3 steps > 2')
   })
 
-  it('max_tokens aggregates input+output', () => {
+  it('max_tokens applies to total (cache tokens count)', () => {
     expect(checkAssertions({ max_tokens: 1500 }, trace())).toHaveLength(0)
     const failures = checkAssertions({ max_tokens: 1499 }, trace())
-    expect(failures[0]).toContain('1500')
+    expect(failures[0]).toContain('total 1500')
+  })
+
+  it('max_tokens counts cacheRead/cacheWrite/reasoning toward total', () => {
+    // in+out 只有 100，但 cache 命中把 total 推到 8100 —— 缓存 token 不能漏计
+    const cached = trace({
+      tokens: { input: 20, output: 80, cacheRead: 7800, cacheWrite: 200, reasoning: 0, total: 8100 },
+    })
+    expect(checkAssertions({ max_tokens: 200 }, cached)).toHaveLength(1)
+    expect(checkAssertions({ max_tokens: 8100 }, cached)).toHaveLength(0)
+  })
+
+  it('no_tool_errors fails with tool name and error summary', () => {
+    const t = trace({ toolErrors: [{ name: 'write', error: 'PermissionDenied: /etc/passwd' }] })
+    const failures = checkAssertions({ no_tool_errors: true }, t)
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain("tool 'write'")
+    expect(failures[0]).toContain('PermissionDenied')
+  })
+
+  it('no_tool_errors passes when toolErrors is empty', () => {
+    expect(checkAssertions({ no_tool_errors: true }, trace())).toHaveLength(0)
+  })
+
+  it('toolErrors do not affect results when no_tool_errors is unset', () => {
+    const t = trace({ toolErrors: [{ name: 'x', error: 'boom' }] })
+    expect(checkAssertions({}, t)).toEqual([])
+    expect(checkAssertions({ no_tool_errors: false }, t)).toEqual([])
   })
 
   it('empty assert passes anything', () => {

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import type { CollectedTrace } from './types.js'
+import { emptyTokenUsage } from './types.js'
+import type { CollectedTrace, ToolError } from './types.js'
 
 /**
  * 从 assistant/message 的 data.message 提取纯文本。
@@ -30,10 +31,12 @@ function joinTextBlocks(blocks: unknown[]): string {
 /**
  * 解析纯 JSONL session trace（每行一帧信封 `{ type, seq, time, data }`）→ 观测结果。
  *
- * 只提取四类帧：
+ * 只提取五类帧：
  * - `turn/end`：data.reason.kind（取最后一帧）
- * - `tool/call`：data.name（按出现顺序）
- * - `assistant/message`：data.message 文本（取最后一帧）+ 累加 data.usage.inputTokens/outputTokens
+ * - `tool/call`：data.name（按出现顺序），并记录 callId → name 映射
+ * - `tool/result`：data.error / data.isError 硬错误（经 callId 关联工具名）
+ * - `assistant/message`：data.message 文本（取最后一帧）+ 累加 data.usage
+ *   各字段（inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens，互斥计数）
  * - `step/end`：计数
  *
  * 不良行（非 JSON / 无 type）跳过并计数，不抛错——collector 对脏 trace 保持健壮。
@@ -44,7 +47,9 @@ function joinTextBlocks(blocks: unknown[]): string {
  */
 export function collectFromJsonl(text: string): CollectedTrace {
   const toolsCalled: string[] = []
-  const tokens = { input: 0, output: 0 }
+  const tokens = emptyTokenUsage()
+  const toolErrors: ToolError[] = []
+  const callNames = new Map<string, string>() // tool/call 的 callId → name，供 tool/result 关联
   let turnEnd: string | undefined
   let finalText = ''
   let steps = 0
@@ -74,15 +79,32 @@ export function collectFromJsonl(text: string): CollectedTrace {
       }
       case 'tool/call': {
         if (typeof data.name === 'string') toolsCalled.push(data.name)
+        if (typeof data.callId === 'string' && typeof data.name === 'string') callNames.set(data.callId, data.name)
+        break
+      }
+      case 'tool/result': {
+        // 真实帧形状（session-persistence contract）：正常结果 data.isError + content；
+        // 合成错误结果 data.error = { name, code }。两种都算硬错误。
+        const error = extractToolError(data)
+        if (error !== null) {
+          const callId = typeof data.callId === 'string' ? data.callId : undefined
+          const name = (typeof data.name === 'string' && data.name) || (callId && callNames.get(callId)) || callId || '<unknown>'
+          toolErrors.push({ name, error })
+        }
         break
       }
       case 'assistant/message': {
         const text = extractText(data.message)
         if (text !== undefined) finalText = text
-        const usage = data.usage as { inputTokens?: unknown; outputTokens?: unknown } | undefined
+        const usage = data.usage as
+          | { inputTokens?: unknown; outputTokens?: unknown; cacheReadTokens?: unknown; cacheWriteTokens?: unknown; reasoningTokens?: unknown }
+          | undefined
         if (usage) {
           if (typeof usage.inputTokens === 'number') tokens.input += usage.inputTokens
           if (typeof usage.outputTokens === 'number') tokens.output += usage.outputTokens
+          if (typeof usage.cacheReadTokens === 'number') tokens.cacheRead += usage.cacheReadTokens
+          if (typeof usage.cacheWriteTokens === 'number') tokens.cacheWrite += usage.cacheWriteTokens
+          if (typeof usage.reasoningTokens === 'number') tokens.reasoning += usage.reasoningTokens
         }
         break
       }
@@ -93,7 +115,41 @@ export function collectFromJsonl(text: string): CollectedTrace {
     }
   }
 
-  return { turnEnd, toolsCalled, finalText, steps, tokens, events, skippedLines }
+  tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite + tokens.reasoning
+  return { turnEnd, toolsCalled, finalText, steps, tokens, toolErrors, events, skippedLines }
+}
+
+const TOOL_ERROR_MAX = 200
+
+/** 从 tool/result data 提取错误摘要；无错误返回 null */
+export function extractToolError(data: Record<string, unknown>): string | null {
+  if (data.error !== undefined && data.error !== null) {
+    return truncate(formatErrorValue(data.error))
+  }
+  if (data.isError === true) {
+    const text = extractText({ content: data.content })
+    return truncate(text && text !== '' ? text : 'tool returned error (isError)')
+  }
+  return null
+}
+
+function formatErrorValue(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object') {
+    const e = error as { name?: unknown; code?: unknown; message?: unknown }
+    const parts = [e.name, e.code, e.message].filter((p) => typeof p === 'string' && p !== '') as string[]
+    if (parts.length > 0) return parts.join(': ')
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return String(error)
+    }
+  }
+  return String(error)
+}
+
+function truncate(s: string): string {
+  return s.length > TOOL_ERROR_MAX ? s.slice(0, TOOL_ERROR_MAX) + '…' : s
 }
 
 /** 从落盘的 session.jsonl（纯 JSONL，compression: 'none'）采集观测结果 */

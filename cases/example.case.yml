@@ -5,3 +5,4 @@ assert:
   output_contains: ["hello"]
   max_steps: 4
   max_tokens: 20000
+  no_tool_errors: true           # 工具返回硬错误（tool/result 带 error/isError）即 fail，防"兜底假通过"

@@ -23,7 +23,8 @@ assert:
   tools_called: [tool_a, tool_b] # tool/call 名称序列须按序包含（保序子序列，不要求连续）
   output_contains: ["关键词1"]    # 最终 assistant 文本须包含全部关键词
   max_steps: 8                   # 可选，step/end 数上限
-  max_tokens: 50000              # 可选，聚合 token（input+output）上限
+  max_tokens: 50000              # 可选，聚合 token 总量（含 cacheRead/cacheWrite/reasoning）上限
+  no_tool_errors: true           # 可选，任何工具硬错误（tool/result 带 error/isError）即 fail
 ```
 
 ## 编写要点

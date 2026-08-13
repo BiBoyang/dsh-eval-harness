@@ -39,10 +39,16 @@ export function checkAssertions(assert: EvalAssert, trace: CollectedTrace): stri
     failures.push(`max_steps: ${trace.steps} steps > ${assert.max_steps}`)
   }
 
-  if (assert.max_tokens !== undefined) {
-    const total = trace.tokens.input + trace.tokens.output
-    if (total > assert.max_tokens) {
-      failures.push(`max_tokens: ${total} tokens (input ${trace.tokens.input} + output ${trace.tokens.output}) > ${assert.max_tokens}`)
+  if (assert.max_tokens !== undefined && trace.tokens.total > assert.max_tokens) {
+    const t = trace.tokens
+    failures.push(
+      `max_tokens: total ${t.total} (in ${t.input} + out ${t.output} + cacheR ${t.cacheRead} + cacheW ${t.cacheWrite} + reasoning ${t.reasoning}) > ${assert.max_tokens}`,
+    )
+  }
+
+  if (assert.no_tool_errors === true && trace.toolErrors.length > 0) {
+    for (const e of trace.toolErrors) {
+      failures.push(`no_tool_errors: tool '${e.name}' returned error: ${e.error}`)
     }
   }
 

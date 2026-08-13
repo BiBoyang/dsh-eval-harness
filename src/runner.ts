@@ -5,6 +5,7 @@ import { checkAssertions } from './assert.js'
 import { collectFromFile } from './collector.js'
 import { summarize } from './gate.js'
 import { renderJson, renderMarkdown } from './report.js'
+import { emptyTokenUsage } from './types.js'
 import type { CaseResult, EvalAssert, EvalCase, RunReport } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
 
@@ -70,6 +71,12 @@ export function parseCase(text: string, file: string): EvalCase {
       }
       assert[key] = a[key] as number
     }
+  }
+  if (a.no_tool_errors !== undefined) {
+    if (typeof a.no_tool_errors !== 'boolean') {
+      throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.no_tool_errors' must be a boolean`)
+    }
+    assert.no_tool_errors = a.no_tool_errors
   }
   return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, assert }
 }
@@ -252,7 +259,8 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       toolsCalled: [],
       finalText: '',
       steps: 0,
-      tokens: { input: 0, output: 0 },
+      tokens: emptyTokenUsage(),
+      toolErrors: [],
     }
     try {
       const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
@@ -277,6 +285,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         finalText: trace.finalText,
         steps: trace.steps,
         tokens: trace.tokens,
+        toolErrors: trace.toolErrors,
         durationMs: Date.now() - startedAt,
       })
     } catch (err) {
