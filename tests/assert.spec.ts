@@ -72,19 +72,17 @@ describe('checkAssertions', () => {
     expect(failures[0]).toContain('3 steps > 2')
   })
 
-  it('max_tokens applies to total (cache tokens count)', () => {
+  it('max_tokens compares against total (computed by collector as in+out+reasoning)', () => {
     expect(checkAssertions({ max_tokens: 1500 }, trace())).toHaveLength(0)
     const failures = checkAssertions({ max_tokens: 1499 }, trace())
     expect(failures[0]).toContain('total 1500')
+    expect(failures[0]).toContain('not counted') // 失败信息标明 cache 口径
   })
 
-  it('max_tokens counts cacheRead/cacheWrite/reasoning toward total', () => {
-    // in+out 只有 100，但 cache 命中把 total 推到 8100 —— 缓存 token 不能漏计
-    const cached = trace({
-      tokens: { input: 20, output: 80, cacheRead: 7800, cacheWrite: 200, reasoning: 0, total: 8100 },
-    })
-    expect(checkAssertions({ max_tokens: 200 }, cached)).toHaveLength(1)
-    expect(checkAssertions({ max_tokens: 8100 }, cached)).toHaveLength(0)
+  it('max_tokens boundary: total equal passes, exceeding fails', () => {
+    const atLimit = trace({ tokens: { input: 100, output: 50, cacheRead: 99999, cacheWrite: 0, reasoning: 0, total: 150 } })
+    expect(checkAssertions({ max_tokens: 150 }, atLimit)).toHaveLength(0)
+    expect(checkAssertions({ max_tokens: 149 }, atLimit)).toHaveLength(1)
   })
 
   it('no_tool_errors fails with tool name and error summary', () => {

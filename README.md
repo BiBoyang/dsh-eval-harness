@@ -46,13 +46,14 @@ assert:
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
   output_contains: ["关键词"]    # 最终 assistant 文本须包含全部
   max_steps: 8                  # 可选，step/end 数上限
-  max_tokens: 50000             # 可选，聚合 token 总量（input+output+cacheRead+cacheWrite+reasoning）上限
+  max_tokens: 50000             # 可选，token 上限（input+output+reasoning；cacheRead/cacheWrite 不计入，防多步膨胀）
   no_tool_errors: true          # 可选，任何 tool/result 硬错误（data.error / isError）即 fail
 ```
 
-报告里的 token 是分字段聚合：`total (in+out+cacheR+cacheW+reas)`——prompt cache
+报告里的 token 是分字段聚合：`total (in X+out Y+reas Z; cacheR A+cacheW B)`——prompt cache
 命中时 `inputTokens` 只剩零头、真实输入在 `cacheReadTokens`，分字段展示让 cache
-命中情况一眼可见；`max_tokens` 对 total 生效（缓存 token 占上下文也计费，不漏计）。
+命中情况一眼可见。`max_tokens` 对 `total`（input+output+reasoning）生效：cacheRead 是
+多步会话里同一段缓存的重复读回，计入会让上限随步数膨胀，故只展示、不计入。
 
 示例见 [`cases/example.case.yml`](cases/example.case.yml)。
 [`cases/real/`](cases/real/) 收录了 10 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
