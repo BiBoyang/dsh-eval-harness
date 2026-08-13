@@ -1,0 +1,11 @@
+name: bash-only
+prompt: |
+  请只使用 bash 工具执行一次命令 `printf 'EXACTOK-42'`，然后把该命令的标准输出原样回复给我。
+  整个任务只允许调用一次 bash 工具，不要使用任何其他工具，也不要重复调用；最终回复里必须包含 EXACTOK-42。
+require_plugins: ["@deepseek-ai/dsh-tool-bash"]
+assert:
+  turn_end: completed
+  tools_exact: [bash]            # 精确锁死：恰好一次 bash 调用，多一个工具/多一次调用都 fail
+  output_contains: ["EXACTOK-42"]
+  max_steps: 8
+  max_tokens: 30000

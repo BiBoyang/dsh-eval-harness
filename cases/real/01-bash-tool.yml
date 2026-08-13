@@ -7,5 +7,9 @@ assert:
   turn_end: completed
   tools_called: ["bash"]
   output_contains: ["BASHOK-7f3a"]
+  tools_not_called: [write, edit]  # 只读任务：agent 不应动用任何写工具
+  tool_args_contains:              # bash 入参 JSON 串里必须真的带着目标串（防编造输出）
+    - name: bash
+      contains: BASHOK-7f3a
   max_steps: 8
   max_tokens: 30000
