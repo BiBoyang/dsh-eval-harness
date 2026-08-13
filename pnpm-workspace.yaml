@@ -1,6 +1,9 @@
 # esbuild（vitest 依赖）的安装脚本放行为 true（pnpm ≥10 阻止依赖 build 脚本时的白名单）
 allowBuilds:
   esbuild: true
-# @deepseek-ai/* peer 由 DSH profile pnpm 闭包注入，不在公共 npm；禁止自动安装 peer
-# （pnpm 10+ 该配置从 .npmrc 迁至 pnpm-workspace.yaml）
+# 不自动安装 peer：dsh-tools 依赖树里有未发布的 peer（@deepseek-ai/dsh-type-meta 404），
+# 自动安装会整体失败；改为在 dependencies 显式声明运行时闭包（见 package.json）。
 autoInstallPeers: false
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/cordis@4.0.1'
+  - '@deepseek-ai/cosmokit@1.8.2'

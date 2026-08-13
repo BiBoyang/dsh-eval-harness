@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { computeGate, loadReport, renderGateJson, renderGateText } from './gate.js'
 import { runEval } from './runner.js'
@@ -6,7 +7,7 @@ import { runEval } from './runner.js'
 export const name = 'dsh-eval-harness'
 export const inject = ['tools']
 
-const renderJsonText = (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }]
+const renderJsonText = (_args: unknown, value: unknown): ContentBlock[] => [{ type: 'text', text: String(value) }]
 
 export function apply(ctx: Context): void {
   ctx.tools.register(
@@ -27,18 +28,15 @@ export function apply(ctx: Context): void {
         },
         session_root: {
           type: 'string',
-          required: false,
           description: 'Isolated session root for the eval runs (default: <output_dir>/.sessions).',
         },
         profile: {
           type: 'string',
-          required: false,
           default: 'headless',
           description: "dsh profile used to run cases (default 'headless').",
         },
         timeout_ms: {
           type: 'integer',
-          required: false,
           default: 600000,
           description: 'Per-case subprocess timeout in milliseconds (default 600000).',
         },
@@ -72,7 +70,6 @@ export function apply(ctx: Context): void {
       parameters: {
         before: {
           type: 'string',
-          required: false,
           description: 'Path to the baseline report.json. Omit or point at a missing file for N/A.',
         },
         after: {
@@ -82,13 +79,11 @@ export function apply(ctx: Context): void {
         },
         strict: {
           type: 'boolean',
-          required: false,
           default: false,
           description: 'Strict mode: WARN exit code becomes 2 instead of 0.',
         },
         gate_json: {
           type: 'boolean',
-          required: false,
           default: false,
           description: 'Output a single JSON object instead of key=value text lines.',
         },
