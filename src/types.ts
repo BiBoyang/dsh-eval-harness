@@ -24,6 +24,13 @@ export interface EvalAssert {
   max_tokens?: number
   /** true 时任何工具硬错误（tool/result 带 error 或 isError）即 fail */
   no_tool_errors?: boolean
+  /** LLM-as-judge 语义断言（结构断言全过后才调；判 FAIL 的理由只进 failures 消息） */
+  output_judge?: OutputJudgeAssert
+}
+
+/** output_judge 的判定标准（rubric 须可判定、避免主观词，judge 按二元 PASS/FAIL 评） */
+export interface OutputJudgeAssert {
+  rubric: string
 }
 
 /** tool_args_contains / tool_result_contains 的匹配模式 */

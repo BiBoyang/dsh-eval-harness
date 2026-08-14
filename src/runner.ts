@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import { checkAssertions } from './assert.js'
 import { collectFromFile, readSessionHeader } from './collector.js'
 import { summarize } from './gate.js'
+import { judgeOutput } from './judge.js'
 import { renderJson, renderMarkdown } from './report.js'
 import { emptyTokenUsage } from './types.js'
 import type { CaseResult, CollectedTrace, EvalAssert, EvalCase, RunReport } from './types.js'
@@ -28,6 +29,11 @@ export interface RunOptions {
   concurrency?: number
   /** 失败重跑的全局默认次数（非负整数，默认 0 不重跑）；用例 yaml 的 retries 优先于此值 */
   retries?: number
+  /**
+   * output_judge 的判定函数注入口（测试用；缺省用 src/judge.ts 的真实实现，
+   * 配置走环境变量）。不进 eval_run 工具的 parameters schema——工具层无感。
+   */
+  judge?: (input: { rubric: string; output: string }) => Promise<{ pass: boolean; reason: string }>
   /** 只跑命中任一标签的用例（用例 yaml 的 tags 字段） */
   tags?: string[]
   /** 只跑这些名字（精确匹配）的用例 */
@@ -121,6 +127,13 @@ export function parseCase(text: string, file: string): EvalCase {
       throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.no_tool_errors' must be a boolean`)
     }
     assert.no_tool_errors = a.no_tool_errors
+  }
+  if (a.output_judge !== undefined) {
+    const judge = a.output_judge as { rubric?: unknown } | null
+    if (!judge || typeof judge !== 'object' || Array.isArray(judge) || typeof judge.rubric !== 'string' || judge.rubric === '') {
+      throw new Error(`${PREFIX}: failed to parse case file '${file}': 'assert.output_judge' must be a mapping with a non-empty string 'rubric'`)
+    }
+    assert.output_judge = { rubric: judge.rubric }
   }
   return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, assert }
 }
@@ -344,6 +357,8 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   const timeoutMs = options.timeoutMs ?? 600_000
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1))
   const retriesDefault = Math.max(0, Math.floor(options.retries ?? 0))
+  // judge 缺省用真实实现（env 配置）；测试经 RunOptions.judge 注入假实现
+  const judgeFn = options.judge ?? judgeOutput
   const casesDir = resolve(options.casesDir)
   const outputDir = resolve(options.outputDir)
   const sessionBase = resolve(options.sessionRoot ?? join(outputDir, '.sessions'))
@@ -412,6 +427,28 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         }
         const trace = await collectFromFile(sessionFile)
         const failures = checkAssertions(evalCase.assert, trace)
+        // judge 兜语义：仅当结构性断言全过且用例带 output_judge 才调——
+        // 结构已失败的 attempt 重跑也过不了，不白烧 judge token
+        if (failures.length === 0 && evalCase.assert.output_judge !== undefined) {
+          try {
+            const verdict = await judgeFn({ rubric: evalCase.assert.output_judge.rubric, output: trace.finalText })
+            if (!verdict.pass) {
+              failures.push(`output_judge: ${verdict.reason}`)
+            }
+            // 判 PASS 时理由丢弃：report 不新增字段，pass 用例不留 judge 痕迹
+          } catch (err) {
+            // infra 抖动（HTTP 错误/超时/解析失败/无 key）记 error 而非 fail，
+            // 可被 retries 覆盖——不应被记成断言失败
+            return {
+              ...base,
+              ...traceFields(trace),
+              status: 'error',
+              error: `${PREFIX}: output_judge: judge call failed: ${(err as Error).message}`,
+              failures: [],
+              durationMs: Date.now() - startedAt,
+            }
+          }
+        }
         return {
           ...base,
           ...traceFields(trace),

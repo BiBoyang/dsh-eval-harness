@@ -6,6 +6,13 @@
 
 ### Added
 
+- LLM-as-judge 语义断言：用例 yaml 的 `assert.output_judge.rubric`（必填非空）。
+  定位「结构断言优先、judge 兜语义」——attempt 只有结构性断言全过后才调 judge
+  （判 FAIL 理由进 `failures`，判 PASS 不留痕迹）；judge 调用失败（HTTP 错误/
+  超时/解析失败/无 key）按 `error` 处理，可被 `retries` 覆盖。实现零依赖
+  （Node 内置 fetch 调 OpenAI 兼容接口），配置走环境变量 `EVAL_JUDGE_API_KEY`
+  （回落 `DEEPSEEK_API_KEY`）/ `EVAL_JUDGE_BASE_URL` / `EVAL_JUDGE_MODEL`，
+  `eval_run` 工具参数面不变。
 - flaky 治理（失败才重跑）：用例 yaml 新增 `retries`（非负整数，缺省用
   `eval_run` 的全局 `retries`，默认 0 不重跑）。单条用例最多跑 `retries+1`
   次，任一 attempt 断言全过即停；fail 和 error（含超时）都触发重跑，最终

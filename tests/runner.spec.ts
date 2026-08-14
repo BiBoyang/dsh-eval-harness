@@ -151,6 +151,31 @@ describe('parseCase retries', () => {
   })
 })
 
+describe('parseCase output_judge', () => {
+  it('parses output_judge with a rubric', () => {
+    const c = parseCase('name: a\nprompt: "p"\nassert:\n  output_judge:\n    rubric: "解释原因而非只给结论"\n', 'a.yml')
+    expect(c.assert.output_judge).toEqual({ rubric: '解释原因而非只给结论' })
+  })
+
+  it('rejects non-mapping output_judge', () => {
+    expect(() => parseCase('name: a\nprompt: "p"\nassert:\n  output_judge: "解释原因"\n', 'a.yml')).toThrow(
+      /'assert\.output_judge' must be a mapping with a non-empty string 'rubric'/,
+    )
+  })
+
+  it('rejects output_judge without a rubric', () => {
+    expect(() => parseCase('name: a\nprompt: "p"\nassert:\n  output_judge:\n    model: gpt\n', 'a.yml')).toThrow(
+      /'assert\.output_judge' must be a mapping with a non-empty string 'rubric'/,
+    )
+  })
+
+  it('rejects empty rubric', () => {
+    expect(() => parseCase('name: a\nprompt: "p"\nassert:\n  output_judge:\n    rubric: ""\n', 'a.yml')).toThrow(
+      /'assert\.output_judge' must be a mapping with a non-empty string 'rubric'/,
+    )
+  })
+})
+
 describe('filterCases', () => {
   const mk = (name: string, tags?: string[]) => ({ file: `${name}.yml`, evalCase: { name, prompt: 'p', tags, assert: {} } })
 
@@ -490,5 +515,151 @@ describe('runEval retries (flaky 治理)', () => {
     expect(c.status).toBe('pass')
     expect(c.attempts).toBe(2)
     expect(c.flaky).toBe(true)
+  }, 15_000)
+})
+
+describe('runEval output_judge (LLM-as-judge)', () => {
+  const header = '{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":0}'
+  const bashCall = '{"type":"tool/call","seq":1,"time":1,"data":{"turn":1,"step":1,"callId":"c1","name":"bash","arguments":"{}"}}'
+
+  /** fake dsh：--version 探针通过；正常调用按 overlay root 落带 bash 调用的 trace（tools_called 断言恒过） */
+  const writeJudgeFakeDsh = async (root: string): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        `printf '%s\\n' '${header}' '${bashCall}' > "$dir/session.jsonl"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    return fakeBin
+  }
+
+  const firstCase = (report: { cases: { name: string; status: string; failures: string[]; error?: string; attempts: number; flaky?: boolean }[] }) => {
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    return c
+  }
+
+  const setupCase = async (caseYaml: string): Promise<{ fakeBin: string; casesDir: string; out: string }> => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-judge-'))
+    const fakeBin = await writeJudgeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'j.yml'), caseYaml)
+    return { fakeBin, casesDir, out: join(root, 'out') }
+  }
+
+  const judgedCase = (retries = ''): string =>
+    `name: judge-me\nprompt: "p"\n${retries}assert:\n  tools_called: [bash]\n  output_judge:\n    rubric: "回答应解释原因"\n`
+
+  it('judge FAIL turns a structurally passing attempt into fail with the judge reason', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(judgedCase())
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async () => ({ pass: false, reason: '只给了结论，没解释原因' }),
+    })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('fail')
+    expect(c.failures).toContain('output_judge: 只给了结论，没解释原因')
+    expect(c.attempts).toBe(1)
+  }, 15_000)
+
+  it('judge PASS keeps the case pass and leaves no judge reason anywhere in the report', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(judgedCase())
+    const inputs: { rubric: string; output: string }[] = []
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async (input) => {
+        inputs.push(input)
+        return { pass: true, reason: 'SECRET-JUDGE-REASON' }
+      },
+    })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(inputs).toHaveLength(1)
+    // judge 收到 yaml 里的 rubric 与 trace 的最终文本
+    expect(inputs[0]?.rubric).toBe('回答应解释原因')
+    // 判 PASS 的理由不写进最终 pass 用例的任何字段（report 全文也不含）
+    expect(JSON.stringify(report)).not.toContain('SECRET-JUDGE-REASON')
+  }, 15_000)
+
+  it('judge call failure counts as error and can be retried into a flaky pass', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(judgedCase('retries: 1\n'))
+    let calls = 0
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async () => {
+        calls++
+        if (calls === 1) throw new Error('HTTP 503')
+        return { pass: true, reason: '' }
+      },
+    })
+
+    // 第一次 attempt judge infra 抖动 → error；第二次翻盘 → pass/flaky
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(2)
+    expect(c.flaky).toBe(true)
+  }, 15_000)
+
+  it('judge call failure without retries stays error with a prefixed message', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(judgedCase())
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async () => {
+        throw new Error('timeout after 60000ms')
+      },
+    })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('judge call failed')
+    expect(c.error).toContain('eval_run:')
+    expect(c.attempts).toBe(1)
+    // infra 失败不冒充断言失败
+    expect(c.failures).toEqual([])
+  }, 15_000)
+
+  it('judge is not called when structural assertions already failed', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(
+      'name: struct-fail\nprompt: "p"\nassert:\n  tools_called: [missing-tool]\n  output_judge:\n    rubric: "回答应解释原因"\n',
+    )
+    let calls = 0
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async () => {
+        calls++
+        return { pass: true, reason: '' }
+      },
+    })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('fail')
+    expect(calls).toBe(0)
+    expect(c.failures.every((f) => !f.startsWith('output_judge:'))).toBe(true)
   }, 15_000)
 })

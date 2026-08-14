@@ -60,7 +60,19 @@ assert:
   tool_result_contains:         # 可选，指定工具至少一次结果的文本包含子串
     - name: tool_a
       contains: total
+  output_judge:                 # 可选，LLM 语义评审（结构断言全过后才调，判 FAIL 记 fail）
+    rubric: "回答应解释原因而非只给结论"
 ```
+
+**LLM-as-judge（`output_judge`）**：表达「解释原因而非只给结论」这类写不出正则的语义
+期望。定位是**结构断言优先、judge 兜语义**——一个 attempt 只有结构性断言全过后才会调
+judge（结构已失败不白烧 judge token）；judge 判 FAIL 时理由进该用例 `failures`
+（形如 `output_judge: <理由>`），判 PASS 不留任何痕迹。judge 走 OpenAI 兼容 chat
+completions 接口（零依赖，Node 内置 fetch），配置全靠环境变量：`EVAL_JUDGE_API_KEY`
+（缺省回落 `DEEPSEEK_API_KEY`，两者都无时报错）、`EVAL_JUDGE_BASE_URL`（默认
+`https://api.deepseek.com`）、`EVAL_JUDGE_MODEL`（默认 `deepseek-chat`）。judge 调用
+本身失败（HTTP 错误/超时/回复解析失败/无 key）按 `error` 处理而非 `fail`——infra 抖动
+不是断言失败，可被 `retries` 覆盖。
 
 报告里的 token 是分字段聚合：`total (in X+out Y+reas Z; cacheR A+cacheW B)`——prompt cache
 命中时 `inputTokens` 只剩零头、真实输入在 `cacheReadTokens`，分字段展示让 cache

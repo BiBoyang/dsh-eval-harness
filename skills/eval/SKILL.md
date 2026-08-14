@@ -62,6 +62,10 @@ assert:
 - **易抖用例设 `retries: 1~2` 兜底，而不是放宽断言**：LLM 评测非确定，结构
   断言（如 `tools_exact`、正则匹配）偶发抖动时，用失败重跑保持断言严格性；
   重跑后才过的用例会在 report 里标 `flaky`，提醒排查抖动来源。
+- **`output_judge` 只用于写不出正则的语义期望**：能落成 `output_contains` /
+  `output_matches` 的先用结构断言（可复现、零成本）；judge 兜「解释原因而非
+  只给结论」这类语义判分。rubric 要可判定（写出「必须/不许」的具体标准），
+  避免主观词（如「回答要好」）——judge 按二元 PASS/FAIL 评，模糊标准只会放大抖动。
 - **用例名稳定**：gate 按 `name` 对比 baseline，改名 = 删除 + 新增（WARN）。
 
 ## 跑评测与门禁
