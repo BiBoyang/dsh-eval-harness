@@ -1,6 +1,6 @@
 {
   "name": "dsh-eval-harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DSH 插件回归评测门禁：yaml 用例 + headless 驱动 + trace 断言 + baseline 门禁（eval_run / eval_gate）",
   "license": "MIT",
   "type": "module",
