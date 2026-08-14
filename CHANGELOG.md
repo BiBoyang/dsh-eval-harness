@@ -16,6 +16,9 @@
   标记 `PASS (flaky, N attempts)`。
   - 口径变化：`durationMs` 改为全 attempt 总耗时（含重跑），让 flaky 的真实
     成本可见；gate 不读该字段，不受影响。
+- CI：eval workflow 增加每日定时跑（02:00 Asia/Shanghai，近 24h 无新 commit 则跳过）；
+  新增 update-baseline workflow（workflow_dispatch 手动触发：全量重跑 → 覆盖
+  `baseline/report.json` → 开 PR 附报告摘要供人工复核，不自动合入）。
 - 并行跑用例：`eval_run` 新增 `concurrency`（默认 1 串行）。每条用例改为独占一份
   overlay（`eval-overlay-<序号>-<用例名>.patch.yml`）与 session 根（`<session_root>/<序号>-<用例名>`，
   序号是加载序——slug 化不是唯一键），并行时互不干扰；report 用例顺序仍与 cases

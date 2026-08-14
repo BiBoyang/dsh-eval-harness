@@ -140,7 +140,12 @@ REGRESSION echo-hello: pass -> fail
 真实 workflow 见 [.github/workflows/eval.yml](.github/workflows/eval.yml)：`pnpm build && pnpm test`
 后直调 `lib/runner.js` 的 `runEval` 跑 `cases/real/` 全量（真实 LLM，需仓库 secret
 `DEEPSEEK_API_KEY`），再用 `lib/gate.js` 的 `computeGate` 对比 `baseline/report.json`，
-按 `EXIT_CODE` 拦截；report 作为 artifact 留存。用例或 harness 代码变更会触发重跑。
+按 `EXIT_CODE` 拦截；report 作为 artifact 留存。用例或 harness 代码变更会触发重跑，
+另有每日定时跑（近 24h 无新 commit 则跳过）。
+
+baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/update-baseline.yml)：
+Actions 页手动触发 → 全量重跑 → 覆盖 `baseline/report.json` 并开 PR（附报告摘要），
+人工复核后合并，不自动合入。
 
 `baseline/report.json` 已入库（首轮全量评测人工复核：`read-image` 在无视觉能力模型上
 预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate

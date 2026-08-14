@@ -1,0 +1,131 @@
+name: update-baseline
+
+# 手动更新评测 baseline：全量重跑 cases/real（真实 LLM，需 DEEPSEEK_API_KEY），
+# 把本次 report.json 覆盖 baseline/report.json 后开 PR 供人工复核——换用例口径 /
+# token 阈值门禁触发 WARN 时，省掉「本地全量重跑 → 复核 → 手动提交」的循环。
+# 只开 workflow_dispatch：baseline 是 gate 的基准，必须有人按下按钮并复核 PR，不自动合入。
+
+on:
+  workflow_dispatch:
+
+# 开 PR 需要推分支（contents: write）+ 建 PR（pull-requests: write）
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # secrets 不能直接出现在 if 条件里，先落到 job 级 env 判空再输出标记；
+  # fork / 未配置 key 的环境让整个更新 job 跳过（对齐 eval.yml 的 env 判空模式）
+  check-key:
+    runs-on: ubuntu-latest
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    outputs:
+      has_key: ${{ steps.check.outputs.has_key }}
+    steps:
+      - name: Check DEEPSEEK_API_KEY
+        id: check
+        run: echo "has_key=$([ -n "$DEEPSEEK_API_KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  update-baseline:
+    needs: check-key
+    if: needs.check-key.outputs.has_key == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build && pnpm test
+
+      # dsh 依赖树大（531 包），冷装 ~6min；单独一步装好，评测用全局 dsh 二进制，
+      # 避免 harness 探测 npx 时 60s 超时（npx 冷缓存解析必然超时）。
+      - name: Cache npm (dsh install)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-dsh-0.1.0-rc.6
+
+      - name: Install dsh
+        run: npm install -g @deepseek-ai/dsh@0.1.0-rc.6
+
+      # 参数与 eval.yml 的评测步完全一致（含 retries 缺省 0），保证产出报告口径可比
+      - name: Run eval cases (real LLM)
+        run: |
+          node --input-type=module -e "
+          import { runEval } from './lib/runner.js'
+          const report = await runEval({
+            casesDir: 'cases/real',
+            outputDir: '.eval/out',
+            dshBin: 'dsh',
+            concurrency: 3,
+          })
+          console.log(JSON.stringify(report.summary))
+          "
+
+      - name: Overwrite baseline + render PR body
+        run: |
+          cp .eval/out/report.json baseline/report.json
+          node --input-type=module -e "
+          import { readFile, writeFile } from 'node:fs/promises'
+          const report = JSON.parse(await readFile('.eval/out/report.json', 'utf8'))
+          const lines = [
+            '本次全量评测报告摘要（供人工复核；完整报告见本 workflow 的 artifact）:',
+            '',
+            '- 汇总: 共 ' + report.summary.total + ' 条, PASS ' + report.summary.passed + ' / FAIL ' + report.summary.failed + ' / ERROR ' + report.summary.errored,
+            '- profile: ' + report.profile + ' / harness 版本: ' + report.version,
+            '',
+            '| 用例 | 状态 | attempts | flaky | tokens total |',
+            '| --- | --- | --- | --- | --- |',
+          ]
+          for (const c of report.cases) {
+            lines.push('| ' + c.name.replaceAll('|', '｜') + ' | ' + c.status + ' | ' + c.attempts + ' | ' + (c.flaky ? '是' : '否') + ' | ' + c.tokens.total + ' |')
+          }
+          lines.push(
+            '',
+            '## 复核要点',
+            '',
+            '- diff 应只包含 baseline/report.json 一个文件；',
+            '- FAIL / ERROR 用例请对照 artifact 的 report.md 确认是口径变化而非真实回归；',
+            '- flaky 用例（重跑后才过）建议排查抖动来源，而不是放宽断言。',
+          )
+          await writeFile('.eval/pr-body.md', lines.join('\n') + '\n')
+          "
+
+      # 直接推 main 风险高（baseline 是 gate 的基准），固定走 PR：分支带 run_id，
+      # 便于追溯基准来自哪次全量评测
+      - name: Open baseline update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: chore/baseline-update-${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add baseline/report.json
+          git commit -m "chore: 更新评测 baseline（run $RUN_ID）"
+          git push -u origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "chore: 更新评测 baseline（run $RUN_ID）" \
+            --body-file .eval/pr-body.md
+
+      # 只传两个报告文件，不传 .sessions/ 原始 trace（含真实工具输出，避免公开仓库暴露）
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-report
+          path: |
+            .eval/out/report.json
+            .eval/out/report.md
+          retention-days: 14
