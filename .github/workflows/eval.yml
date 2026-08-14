@@ -39,6 +39,8 @@ jobs:
       - run: pnpm build && pnpm test
 
       - name: Run eval cases (real LLM)
+        # fork / 未配置 DEEPSEEK_API_KEY 的环境跳过评测，不直接红（build+test 仍会跑）
+        if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -53,6 +55,7 @@ jobs:
           "
 
       - name: Gate against baseline
+        if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
         run: |
           OUT=$(node --input-type=module -e "
           import { computeGate, loadReport, renderGateText } from './lib/gate.js'
@@ -63,9 +66,12 @@ jobs:
           echo "$OUT"
           exit $(echo "$OUT" | sed -n 's/^EXIT_CODE=//p')
 
+      # 只传两个报告文件，不传 .sessions/ 原始 trace（含真实工具输出，避免公开仓库暴露）
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-report
-          path: .eval/out/
+          path: |
+            .eval/out/report.json
+            .eval/out/report.md
           retention-days: 14
