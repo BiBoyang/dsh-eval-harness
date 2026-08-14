@@ -18,6 +18,7 @@ metadata:
 name: 用例名（唯一，gate 按名字对比）
 prompt: "发给 agent 的内容"
 require_plugins: [some-plugin]   # 可选：声明依赖的插件（仅元信息，供阅读/环境核对）
+tags: [fast]                     # 可选：标签，eval_run 的 tags 筛选按任一命中匹配
 assert:
   turn_end: completed            # turn/end 事件的 reason.kind
   tools_called: [tool_a, tool_b] # tool/call 名称序列须按序包含（保序子序列，不要求连续）
@@ -63,10 +64,12 @@ assert:
 ## 跑评测与门禁
 
 1. `eval_run`：`cases_dir` 指用例目录，`output_dir` 收 report.json/report.md；
-   可选 `session_root`（默认 `<output_dir>/.sessions`）、`profile`（默认 headless）。
+   可选 `session_root`（默认 `<output_dir>/.sessions`）、`profile`（默认 headless）、
+   `concurrency`（并行数，默认 1）、`tags` / `only`（逗号分隔筛选，交集，无命中报错）。
 2. 首轮结果人工复核后把 report.json 存为 baseline（如 `baseline/report.json` 入库）。
 3. 回归时 `eval_gate`：`before` 指 baseline、`after` 指本次 report.json；
-   文本输出 `OVERALL=PASS|WARN|FAIL|N/A`，`gate_json=true` 输出单条 JSON 供 CI 解析。
+   文本输出 `OVERALL=PASS|WARN|FAIL|N/A`，`gate_json=true` 输出单条 JSON 供 CI 解析；
+   `max_token_increase_pct`（默认 50，0 关闭）控制 token 涨幅回归判定（WARN）。
 
 ## 解析约束（重要）
 

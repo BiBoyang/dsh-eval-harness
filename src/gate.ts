@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import type { CaseResult, CaseStatus, GateDiff, GateReport, GateVerdict, RunReport } from './types.js'
+import type { CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateVerdict, RunReport } from './types.js'
 
 /** gate 视角的归一化状态：error 按 fail 处理 */
 function effective(status: CaseStatus): 'pass' | 'fail' {
@@ -19,16 +19,30 @@ export function gateExitCode(verdict: GateVerdict, strict: boolean): number {
   }
 }
 
+/** gate 阈值选项 */
+export interface GateOptions {
+  /**
+   * token total（input+output+reasoning，与 max_tokens 同口径）涨幅上限百分比：
+   * 状态不变的用例超过该涨幅记 token 回归（WARN）。默认 50；0 关闭。
+   */
+  maxTokenIncreasePct?: number
+}
+
+/** 默认 token 涨幅阈值（百分比）；0 = 关闭 token 回归检测 */
+export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
+
 /**
  * 门禁判定：对比 baseline（before）与本次（after）报告。
  * 规则（优先级从高到低）：
  * - 有用例 PASS → FAIL/error → FAIL
  * - 新增用例即 FAIL/error → FAIL
  * - 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除）→ WARN
+ * - 状态不变但 token total 涨幅超阈值（默认 +50%）→ WARN
  * - 完全一致 → PASS
  * - before 为 null（无 baseline）→ N/A
  */
-export function computeGate(before: RunReport | null, after: RunReport, strict: boolean): GateReport {
+export function computeGate(before: RunReport | null, after: RunReport, strict: boolean, options: GateOptions = {}): GateReport {
+  const maxTokenIncreasePct = options.maxTokenIncreasePct ?? DEFAULT_MAX_TOKEN_INCREASE_PCT
   const base: Omit<GateReport, 'verdict' | 'exitCode'> = {
     strict,
     reasons: [],
@@ -37,24 +51,43 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     improvements: [],
     added: [],
     removed: [],
+    tokenRegressions: [],
   }
   if (!before) {
     return { ...base, verdict: 'N/A', exitCode: gateExitCode('N/A', strict), reasons: ['no baseline report; gate not applicable'] }
   }
 
-  const beforeMap = new Map(before.cases.map((c) => [c.name, c.status]))
-  const afterMap = new Map(after.cases.map((c) => [c.name, c.status]))
+  const beforeMap = new Map(before.cases.map((c) => [c.name, c]))
+  const afterMap = new Map(after.cases.map((c) => [c.name, c]))
 
-  for (const [name, afterStatus] of afterMap) {
-    const beforeStatus = beforeMap.get(name)
-    const diff: GateDiff = { name, before: beforeStatus ?? 'absent', after: afterStatus }
-    if (beforeStatus === undefined) {
+  for (const [name, afterCase] of afterMap) {
+    const beforeCase = beforeMap.get(name)
+    const afterStatus = afterCase.status
+    const diff: GateDiff = { name, before: beforeCase?.status ?? 'absent', after: afterStatus }
+    if (beforeCase === undefined) {
       if (effective(afterStatus) === 'fail') base.newFailures.push(diff)
       else base.added.push(name)
-    } else if (effective(beforeStatus) === 'pass' && effective(afterStatus) === 'fail') {
+    } else if (effective(beforeCase.status) === 'pass' && effective(afterStatus) === 'fail') {
       base.regressions.push(diff)
-    } else if (effective(beforeStatus) === 'fail' && effective(afterStatus) === 'pass') {
+    } else if (effective(beforeCase.status) === 'fail' && effective(afterStatus) === 'pass') {
       base.improvements.push(diff)
+    }
+    // token 回归：状态不变（fail→fail 也算；fail→error 等变化不算）且两侧都有有效
+    // total 时比涨幅；before.total 为 0 无法定义涨幅，跳过
+    if (
+      beforeCase !== undefined &&
+      beforeCase.status === afterStatus &&
+      maxTokenIncreasePct > 0 &&
+      beforeCase.tokens.total > 0 &&
+      afterCase.tokens.total > beforeCase.tokens.total * (1 + maxTokenIncreasePct / 100)
+    ) {
+      const tokenDiff: GateTokenDiff = {
+        name,
+        before: beforeCase.tokens.total,
+        after: afterCase.tokens.total,
+        increasePct: Math.round(((afterCase.tokens.total - beforeCase.tokens.total) / beforeCase.tokens.total) * 100),
+      }
+      base.tokenRegressions.push(tokenDiff)
     }
   }
   for (const name of beforeMap.keys()) {
@@ -66,7 +99,7 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     verdict = 'FAIL'
     for (const d of base.regressions) base.reasons.push(`regression: ${d.name} pass -> ${d.after}`)
     for (const d of base.newFailures) base.reasons.push(`new failing case: ${d.name}`)
-  } else if (base.improvements.length > 0 || base.added.length > 0 || base.removed.length > 0) {
+  } else if (base.improvements.length > 0 || base.added.length > 0 || base.removed.length > 0 || base.tokenRegressions.length > 0) {
     verdict = 'WARN'
     for (const d of base.improvements) base.reasons.push(`improvement: ${d.name} fail -> pass`)
     for (const n of base.added) base.reasons.push(`added passing case: ${n}`)
@@ -74,6 +107,9 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   } else {
     verdict = 'PASS'
     base.reasons.push('all case results identical to baseline')
+  }
+  for (const d of base.tokenRegressions) {
+    base.reasons.push(`token regression: ${d.name} total ${d.before} -> ${d.after} (+${d.increasePct}%)`)
   }
 
   return { ...base, verdict, exitCode: gateExitCode(verdict, strict) }
@@ -90,11 +126,13 @@ export function renderGateText(report: GateReport): string {
     `IMPROVEMENTS=${report.improvements.length}`,
     `ADDED=${report.added.length}`,
     `REMOVED=${report.removed.length}`,
+    `TOKEN_REGRESSIONS=${report.tokenRegressions.length}`,
   ]
   for (const r of report.reasons) lines.push(`REASON ${r}`)
   for (const d of report.regressions) lines.push(`REGRESSION ${d.name}: ${d.before} -> ${d.after}`)
   for (const d of report.newFailures) lines.push(`NEW_FAILURE ${d.name}: ${d.after}`)
   for (const d of report.improvements) lines.push(`IMPROVEMENT ${d.name}: ${d.before} -> ${d.after}`)
+  for (const d of report.tokenRegressions) lines.push(`TOKEN_REGRESSION ${d.name}: total ${d.before} -> ${d.after} (+${d.increasePct}%)`)
   return lines.join('\n')
 }
 

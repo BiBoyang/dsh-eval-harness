@@ -45,9 +45,24 @@ export function apply(ctx: Context): void {
           description:
             "dsh executable command, split on whitespace (default: env DSH_BIN or 'dsh' from PATH). Use 'npx -y @deepseek-ai/dsh' when dsh is not installed globally.",
         },
+        concurrency: {
+          type: 'integer',
+          default: 1,
+          description: 'How many cases run in parallel (default 1, serial). Each case gets its own session root and workspace, so parallel runs are isolated.',
+        },
+        tags: {
+          type: 'string',
+          description: 'Comma-separated tag filter: only run cases whose yaml tags field contains at least one of these.',
+        },
+        only: {
+          type: 'string',
+          description: 'Comma-separated case names: only run these cases (exact match). Combined with tags as an intersection.',
+        },
       },
       output: { schema: { type: 'string' }, render: renderJsonText },
       execute: async (args) => {
+        const splitCsv = (v: unknown): string[] | undefined =>
+          v === undefined ? undefined : String(v).split(',').map((s) => s.trim()).filter((s) => s !== '')
         const report = await runEval({
           casesDir: String(args.cases_dir),
           outputDir: String(args.output_dir),
@@ -55,6 +70,9 @@ export function apply(ctx: Context): void {
           profile: args.profile === undefined ? undefined : String(args.profile),
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
           dshBin: args.dsh_bin === undefined ? undefined : String(args.dsh_bin),
+          concurrency: typeof args.concurrency === 'number' ? args.concurrency : undefined,
+          tags: splitCsv(args.tags),
+          only: splitCsv(args.only),
         })
         return JSON.stringify({
           summary: report.summary,
@@ -93,12 +111,19 @@ export function apply(ctx: Context): void {
           default: false,
           description: 'Output a single JSON object instead of key=value text lines.',
         },
+        max_token_increase_pct: {
+          type: 'integer',
+          default: 50,
+          description: 'Token total (input+output+reasoning) increase threshold in percent: an unchanged-status case exceeding it counts as a token regression (WARN). Default 50; 0 disables.',
+        },
       },
       output: { schema: { type: 'string' }, render: renderJsonText },
       execute: async (args) => {
         const after = await loadReport(String(args.after))
         const before = args.before === undefined ? null : await loadReport(String(args.before), true)
-        const report = computeGate(before, after!, args.strict === true)
+        const report = computeGate(before, after!, args.strict === true, {
+          maxTokenIncreasePct: typeof args.max_token_increase_pct === 'number' ? args.max_token_increase_pct : undefined,
+        })
         return args.gate_json === true ? renderGateJson(report) : renderGateText(report)
       },
       timeoutMs: 30_000,

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildOverlayYaml, findSessionFile, runEval, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildOverlayYaml, filterCases, findSessionFile, parseCase, runEval, splitDshBin } from '../src/runner.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
@@ -117,6 +117,156 @@ describe('findSessionFile', () => {
     const fresh = await writeSession(root, 'cwddir/session-new', sessionJsonl(0), new Date(now))
     expect(await findSessionFile(root, now - 1000)).toBe(fresh)
     expect(await findSessionFile(root, now + 1000)).toBeNull()
+  })
+})
+
+describe('parseCase tags', () => {
+  it('parses tags as a list of strings', () => {
+    const c = parseCase('name: a\nprompt: "p"\ntags: [fast, bash]\nassert:\n  turn_end: completed\n', 'a.yml')
+    expect(c.tags).toEqual(['fast', 'bash'])
+  })
+
+  it('rejects non-string tags', () => {
+    expect(() => parseCase('name: a\nprompt: "p"\ntags: [1]\nassert: {}\n', 'a.yml')).toThrow(/'tags' must be a list of strings/)
+  })
+})
+
+describe('filterCases', () => {
+  const mk = (name: string, tags?: string[]) => ({ file: `${name}.yml`, evalCase: { name, prompt: 'p', tags, assert: {} } })
+
+  it('returns all cases when no filter is given', () => {
+    const cases = [mk('a'), mk('b')]
+    expect(filterCases(cases, {})).toBe(cases)
+    expect(filterCases(cases, { tags: [], only: [] })).toBe(cases)
+  })
+
+  it('filters by exact case names (only)', () => {
+    const cases = [mk('a'), mk('b'), mk('c')]
+    expect(filterCases(cases, { only: ['a', 'c'] }).map((c) => c.evalCase.name)).toEqual(['a', 'c'])
+  })
+
+  it('filters by any-matching tag', () => {
+    const cases = [mk('a', ['fast']), mk('b', ['slow']), mk('c', ['fast', 'slow'])]
+    expect(filterCases(cases, { tags: ['fast'] }).map((c) => c.evalCase.name)).toEqual(['a', 'c'])
+  })
+
+  it('combines only and tags as an intersection', () => {
+    const cases = [mk('a', ['fast']), mk('b', ['fast']), mk('c', ['slow'])]
+    expect(filterCases(cases, { only: ['a', 'c'], tags: ['fast'] }).map((c) => c.evalCase.name)).toEqual(['a'])
+  })
+
+  it('untagged cases never match a tags filter', () => {
+    expect(filterCases([mk('a')], { tags: ['fast'] })).toEqual([])
+  })
+})
+
+describe('runEval concurrency + filtering', () => {
+  /** fake dsh：--version 探针通过；正常调用时按 overlay 的 root 落一条带 tool/call 的会话日志后退出 */
+  const writeFakeDsh = async (root: string): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    return fakeBin
+  }
+
+  const writeCase = (dir: string, file: string, name: string, tags = ''): Promise<void> =>
+    writeFile(join(dir, file), `name: ${name}\nprompt: "p"\n${tags}assert:\n  tools_called: [bash]\n`)
+
+  it('runs cases in parallel with isolated per-case session roots, preserving report order', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-par-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'case-a')
+    await writeCase(casesDir, '02.yml', 'case-b')
+    await writeCase(casesDir, '03.yml', 'case-c')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, concurrency: 3, timeoutMs: 10_000 })
+
+    expect(report.cases.map((c) => c.name)).toEqual(['case-a', 'case-b', 'case-c'])
+    expect(report.cases.every((c) => c.status === 'pass')).toBe(true)
+    // 每条用例独占 session 根（<output>/.sessions/<序号>-<slug>/），并行互不干扰
+    for (const dir of ['000-case-a', '001-case-b', '002-case-c']) {
+      expect(await findSessionFile(join(out, '.sessions', dir), 0)).not.toBeNull()
+    }
+  }, 15_000)
+
+  it('keeps same-slug cases isolated by load-index prefix', async () => {
+    // slugify 碰撞（"read image" vs "read-image"）时两条用例仍各有独立 session 根
+    const root = await mkdtemp(join(tmpdir(), 'eval-slug-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'read image')
+    await writeCase(casesDir, '02.yml', 'read-image')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, concurrency: 2, timeoutMs: 10_000 })
+
+    expect(report.cases.map((c) => c.status)).toEqual(['pass', 'pass'])
+    expect(await findSessionFile(join(out, '.sessions', '000-read-image'), 0)).not.toBeNull()
+    expect(await findSessionFile(join(out, '.sessions', '001-read-image'), 0)).not.toBeNull()
+  }, 15_000)
+
+  it('rejects duplicate case names (gate compares baseline by name)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-dup-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'same-name')
+    await writeCase(casesDir, '02.yml', 'same-name')
+
+    await expect(runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin })).rejects.toThrow(/duplicate case name 'same-name'/)
+  })
+
+  it('only filter runs just the named cases, keeping the load-index dir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-only-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'case-a')
+    await writeCase(casesDir, '02.yml', 'case-b')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, only: ['case-b'], timeoutMs: 10_000 })
+    expect(report.cases.map((c) => c.name)).toEqual(['case-b'])
+    expect(report.cases.map((c) => c.status)).toEqual(['pass'])
+    // 隔离目录用加载序而非运行序：only 单跑 case-b 仍落在 001-case-b
+    expect(await findSessionFile(join(out, '.sessions', '001-case-b'), 0)).not.toBeNull()
+  }, 15_000)
+
+  it('tags filter runs just the tagged cases', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-tags-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'case-a', 'tags: [fast]\n')
+    await writeCase(casesDir, '02.yml', 'case-b', 'tags: [slow]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, tags: ['fast'], timeoutMs: 10_000 })
+    expect(report.cases.map((c) => c.name)).toEqual(['case-a'])
+  }, 15_000)
+
+  it('throws when the filter matches no case (loud on CI typos)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-nomatch-'))
+    const fakeBin = await writeFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeCase(casesDir, '01.yml', 'case-a')
+
+    await expect(runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, only: ['nope'] })).rejects.toThrow(/no cases matched filter/)
   })
 })
 

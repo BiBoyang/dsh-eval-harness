@@ -41,6 +41,7 @@ dsh --profile headless --dump-config | grep dsh-eval-harness
 name: 用例名                    # 唯一，gate 按 name 对比 baseline
 prompt: "发给 agent 的内容"      # 多行可用块标量 `|`
 require_plugins: [some-plugin]  # 可选，元信息
+tags: [fast]                    # 可选，标签；eval_run 的 tags 筛选按任一命中匹配
 assert:
   turn_end: completed           # turn/end 事件的 reason.kind
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
@@ -85,6 +86,9 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | `profile` | string | 否 | `headless` | dsh profile |
 | `timeout_ms` | integer | 否 | `600000` | 单条用例子进程超时 |
 | `dsh_bin` | string | 否 | `$DSH_BIN` 或 `dsh` | dsh 可执行命令，按空白拆分；本机无全局 dsh 时用 `npx -y @deepseek-ai/dsh` |
+| `concurrency` | integer | 否 | `1` | 并行跑用例的并发数；每条用例独占 session 根与 workspace，并行互不干扰 |
+| `tags` | string | 否 | - | 逗号分隔标签筛选：只跑 yaml `tags` 命中任一的用例 |
+| `only` | string | 否 | - | 逗号分隔用例名（精确匹配）；与 tags 同给时取交集；筛选后无命中会直接报错（防 CI 笔误空跑假绿） |
 
 输出：JSON 文本（summary + 报告路径 + 各用例状态）。错误一律 throw
 `eval_run:` 前缀消息（找不到 dsh 可执行文件、用例解析失败等）。
@@ -97,6 +101,7 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | `after` | string | 是 | - | 本次 report.json 路径 |
 | `strict` | boolean | 否 | `false` | strict 模式下 WARN 退出码为 2 |
 | `gate_json` | boolean | 否 | `false` | true 时输出单条 JSON（供 CI 解析），否则 key=value 文本 |
+| `max_token_increase_pct` | integer | 否 | `50` | token total（与 max_tokens 同口径）涨幅阈值百分比：状态不变的用例超阈值记 token 回归（WARN）；0 关闭 |
 
 ## gate 协议
 
@@ -106,6 +111,7 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | --- | --- | --- |
 | 有用例 PASS → FAIL/error，或新增用例即 FAIL/error | `FAIL` | 1 |
 | 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除） | `WARN` | 0（strict 为 2） |
+| 状态不变但 token total 涨幅超阈值（默认 +50%，`max_token_increase_pct` 可调，0 关闭） | `WARN` | 0（strict 为 2） |
 | 全部与 baseline 一致 | `PASS` | 0 |
 | 无 baseline | `N/A` | 2 |
 
@@ -120,6 +126,7 @@ NEW_FAILURES=0
 IMPROVEMENTS=0
 ADDED=0
 REMOVED=0
+TOKEN_REGRESSIONS=0
 REASON regression: echo-hello pass -> fail
 REGRESSION echo-hello: pass -> fail
 ```
@@ -140,10 +147,14 @@ REGRESSION echo-hello: pass -> fail
 ## session trace 说明
 
 评测依赖 DSH 落盘的会话 trace（默认 `$DSH_HOME/sessions/<cwd编码>/<session-id>/session.jsonl[.zstd]`，
-每行一帧信封 `{ type, seq, time, data }`）。`eval_run` 不污染环境变量，而是生成一个
-`--patch` overlay（`<output_dir>/eval-overlay.patch.yml`），按 row id 整体替换 base bundle 的
-`session-persistence-jsonl` 配置：把 `root` 切到隔离目录（默认 `<output_dir>/.sessions`，可用
-`session_root` 覆盖）；每条用例再以独立 workspace 作 cwd（session 按 cwd 编码分目录）。
+每行一帧信封 `{ type, seq, time, data }`）。`eval_run` 不污染环境变量，而是为每条用例生成一个 `--patch` overlay
+（`<output_dir>/eval-overlay-<序号>-<用例名>.patch.yml`），按 row id 整体替换 base bundle 的
+`session-persistence-jsonl` 配置：把 `root` 切到该用例的隔离目录
+（`<session_root>/<序号>-<用例名>`，`session_root` 默认 `<output_dir>/.sessions`；序号是加载序，
+因为 slug 化不是唯一键，如 `read image` 与 `read-image` 同 slug）；每条用例再以
+独立 workspace 作 cwd。per-case session 根 + workspace 让用例可以并行跑（`concurrency`），
+互不干扰；subagent/workflow 的子会话也落在同一用例的根下。用例名重名会直接报错
+（gate 按 name 对比 baseline）。
 子进程命令形如 `dsh --profile headless --patch <overlay> <prompt>`（launcher flags 在前，
 prompt 是 app 位置参数放最后）。
 

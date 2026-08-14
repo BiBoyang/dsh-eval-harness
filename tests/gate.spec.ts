@@ -102,6 +102,70 @@ describe('computeGate verdicts', () => {
   })
 })
 
+describe('computeGate token regressions', () => {
+  const withTokens = (name: string, status: CaseStatus, total: number): CaseResult => ({
+    ...caseResult(name, status),
+    tokens: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total },
+  })
+
+  it('WARN when an unchanged-status case exceeds the default +50% token threshold', () => {
+    const g = computeGate(report([withTokens('a', 'pass', 1000)]), report([withTokens('a', 'pass', 1600)]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.exitCode).toBe(0)
+    expect(g.tokenRegressions).toEqual([{ name: 'a', before: 1000, after: 1600, increasePct: 60 }])
+  })
+
+  it('PASS when the increase is within the threshold', () => {
+    const g = computeGate(report([withTokens('a', 'pass', 1000)]), report([withTokens('a', 'pass', 1400)]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.tokenRegressions).toEqual([])
+  })
+
+  it('respects a custom threshold and is disabled by 0', () => {
+    const before = report([withTokens('a', 'pass', 1000)])
+    const after = report([withTokens('a', 'pass', 1200)])
+    expect(computeGate(before, after, false, { maxTokenIncreasePct: 10 }).verdict).toBe('WARN')
+    expect(computeGate(before, after, false, { maxTokenIncreasePct: 0 }).verdict).toBe('PASS')
+  })
+
+  it('skips cases whose baseline total is 0 (increase undefined)', () => {
+    const g = computeGate(report([withTokens('a', 'pass', 0)]), report([withTokens('a', 'pass', 5000)]), false)
+    expect(g.verdict).toBe('PASS')
+  })
+
+  it('FAIL verdict still records token regressions in reasons', () => {
+    const before = report([withTokens('a', 'pass', 1000), withTokens('b', 'pass', 1000)])
+    const after = report([withTokens('a', 'fail', 1000), withTokens('b', 'pass', 2000)])
+    const g = computeGate(before, after, false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.tokenRegressions.map((d) => d.name)).toEqual(['b'])
+    expect(g.reasons.some((r) => r.includes('token regression: b'))).toBe(true)
+  })
+
+  it('skips cases whose status changed (pass->fail / fail->pass are not token regressions)', () => {
+    const before = report([withTokens('a', 'pass', 1000), withTokens('b', 'fail', 1000), withTokens('c', 'fail', 1000)])
+    const after = report([withTokens('a', 'fail', 2000), withTokens('b', 'pass', 2000), withTokens('c', 'error', 2000)])
+    const g = computeGate(before, after, false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.tokenRegressions).toEqual([])
+    expect(g.reasons.some((r) => r.includes('token regression'))).toBe(false)
+  })
+
+  it('counts fail -> fail with a token jump (status unchanged)', () => {
+    const g = computeGate(report([withTokens('a', 'fail', 1000)]), report([withTokens('a', 'fail', 2000)]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.tokenRegressions.map((d) => d.name)).toEqual(['a'])
+  })
+
+  it('text output has TOKEN_REGRESSIONS count and detail lines', () => {
+    const g = computeGate(report([withTokens('a', 'pass', 1000)]), report([withTokens('a', 'pass', 1600)]), false)
+    const text = renderGateText(g)
+    expect(text).toContain('OVERALL=WARN')
+    expect(text).toContain('TOKEN_REGRESSIONS=1')
+    expect(text).toContain('TOKEN_REGRESSION a: total 1000 -> 1600 (+60%)')
+  })
+})
+
 describe('gateExitCode', () => {
   it('maps verdicts per protocol', () => {
     expect(gateExitCode('PASS', false)).toBe(0)

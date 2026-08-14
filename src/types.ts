@@ -51,6 +51,8 @@ export interface EvalCase {
   name: string
   prompt: string
   require_plugins?: string[]
+  /** 用例标签（元信息；eval_run 的 tags 筛选按任一命中匹配） */
+  tags?: string[]
   assert: EvalAssert
 }
 
@@ -171,4 +173,15 @@ export interface GateReport {
   added: string[]
   /** baseline 有而本次没有的用例名 */
   removed: string[]
+  /** 状态不变但 token total 涨幅超阈值的用例（before/after 为 total 值） */
+  tokenRegressions: GateTokenDiff[]
+}
+
+/** token 回归明细（total = input+output+reasoning，与 max_tokens 同口径） */
+export interface GateTokenDiff {
+  name: string
+  before: number
+  after: number
+  /** 涨幅百分比（(after-before)/before*100，取整） */
+  increasePct: number
 }

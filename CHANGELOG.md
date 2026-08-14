@@ -2,6 +2,21 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- 并行跑用例：`eval_run` 新增 `concurrency`（默认 1 串行）。每条用例改为独占一份
+  overlay（`eval-overlay-<序号>-<用例名>.patch.yml`）与 session 根（`<session_root>/<序号>-<用例名>`，
+  序号是加载序——slug 化不是唯一键），并行时互不干扰；report 用例顺序仍与 cases
+  目录文件序一致。用例名重名直接报错（gate 按 name 对比 baseline）。
+- 用例筛选：用例 yaml 新增 `tags` 字段；`eval_run` 新增 `tags` / `only`（逗号分隔，
+  交集，筛选后无命中直接报错防 CI 空跑假绿）。
+- token 回归门禁：`eval_gate` 新增 `max_token_increase_pct`（默认 50，0 关闭）——
+  状态不变的用例 token total 涨幅超阈值记 token 回归（WARN），文本输出新增
+  `TOKEN_REGRESSIONS` / `TOKEN_REGRESSION` 行，JSON 新增 `tokenRegressions` 字段。
+- CI 评测步开 `concurrency: 3`。
+
 ## [0.2.0] - 2026-08-14
 
 ### Added
