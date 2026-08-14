@@ -14,7 +14,7 @@ export function apply(ctx: Context): void {
     defineTool({
       name: 'eval_run',
       description:
-        'Run DSH plugin regression eval cases: load yaml cases from cases_dir, drive real headless dsh agent sessions (isolated session_root/workspace), collect session.jsonl traces, run assertions, and write report.json + report.md to output_dir. Output is a JSON text summary.',
+        'Run DSH plugin regression eval cases: load yaml cases from cases_dir, drive real headless dsh agent sessions (isolated session_root/workspace), collect session traces (session.jsonl or default session.jsonl.zstd, read directly), run assertions, and write report.json + report.md to output_dir. Timed-out cases still get their partial trace collected when available. Output is a JSON text summary.',
       parameters: {
         cases_dir: {
           type: 'string',

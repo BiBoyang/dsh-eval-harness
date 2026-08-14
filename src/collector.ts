@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { decodeZstdLog } from './zstd.js'
+import { decodeZstdFirstFrame, decodeZstdLog } from './zstd.js'
 import { emptyTokenUsage } from './types.js'
 import type { CollectedTrace, ToolCallRecord, ToolError, ToolResultRecord } from './types.js'
 
@@ -236,4 +236,26 @@ export async function collectFromFile(path: string): Promise<CollectedTrace> {
   const bytes = await readFile(path)
   const isZstd = bytes.length >= 4 && bytes.subarray(0, 4).equals(ZSTD_MAGIC_BYTES)
   return collectFromJsonl(isZstd ? decodeZstdLog(bytes) : bytes.toString('utf8'))
+}
+
+/**
+ * 读会话日志的 header 行（`session` 帧）。zstd 只解压首帧，纯文本只取首行；
+ * 任何失败返回 null（调用方回退 mtime 启发式，不阻断采集）。runner 用
+ * header 的 `delegationDepth` 区分父会话与 subagent/workflow 子会话。
+ */
+export async function readSessionHeader(path: string): Promise<Record<string, unknown> | null> {
+  try {
+    const bytes = await readFile(path)
+    const isZstd = bytes.length >= 4 && bytes.subarray(0, 4).equals(ZSTD_MAGIC_BYTES)
+    const firstLine = isZstd
+      ? decodeZstdFirstFrame(bytes)?.toString('utf8').split('\n', 1)[0]
+      : bytes.toString('utf8').split('\n', 1)[0]
+    if (!firstLine) return null
+    const parsed: unknown = JSON.parse(firstLine)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
 }

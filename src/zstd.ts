@@ -95,6 +95,15 @@ export function scanZstdFrames(buffer: Buffer): ZstdFrameScan {
 }
 
 /**
+ * 只解压首个完整帧（读 header 行等场景，避免全量解码）。无完整帧返回 null。
+ */
+export function decodeZstdFirstFrame(buffer: Buffer): Buffer | null {
+  const { frames } = scanZstdFrames(buffer)
+  if (frames.length === 0) return null
+  return zstdDecompressSync(buffer.subarray(frames[0]!.start, frames[0]!.end))
+}
+
+/**
  * 把拼接 zstd 帧解码为 JSONL 文本。完整帧逐帧解压后拼接；残缺尾帧尽力用
  * `finishFlush` 恢复可用明文（失败则丢弃，不影响已完成的帧）。
  */

@@ -1,5 +1,12 @@
+import { mkdtemp, mkdir, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildOverlayYaml, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildOverlayYaml, findSessionFile, runEval, splitDshBin } from '../src/runner.ts'
+
+/** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
+const sessionJsonl = (depth: number, extra = ''): string =>
+  `{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":${depth}}\n${extra}`
 
 describe('buildOverlayYaml', () => {
   it('overrides session-persistence-jsonl row with isolated root (leaving default zstd compression)', () => {
@@ -68,4 +75,83 @@ describe('buildDshArgs', () => {
     expect(args[i + 1]).toBe('/p.yml')
     expect(args.some((a) => a.startsWith('--patch='))).toBe(false)
   })
+})
+
+describe('findSessionFile', () => {
+  const writeSession = async (root: string, dirName: string, body: string, mtime: Date) => {
+    const dir = join(root, dirName)
+    await mkdir(dir, { recursive: true })
+    const p = join(dir, 'session.jsonl')
+    await writeFile(p, body)
+    await utimes(p, mtime, mtime)
+    return p
+  }
+
+  it('returns null when no session log exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-find-'))
+    expect(await findSessionFile(root, 0)).toBeNull()
+  })
+
+  it('prefers the delegationDepth 0 parent session over a newer subagent child', async () => {
+    // 真机观测：subagent/workflow 用例在同一 root 落多个会话文件（父 depth 0 +
+    // 子 depth 1），子会话若最后写入会被纯 mtime 启发式错捡。
+    const root = await mkdtemp(join(tmpdir(), 'eval-find-'))
+    const now = Date.now()
+    const parent = await writeSession(root, 'cwddir/session-parent', sessionJsonl(0), new Date(now - 2000))
+    await writeSession(root, 'cwddir/child-uuid', sessionJsonl(1), new Date(now))
+    expect(await findSessionFile(root, 0)).toBe(parent)
+  })
+
+  it('falls back to newest mtime when no header is parseable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-find-'))
+    const now = Date.now()
+    await writeSession(root, 'a/session-x', 'not json\n', new Date(now - 2000))
+    const newer = await writeSession(root, 'b/session-y', 'also not json\n', new Date(now))
+    expect(await findSessionFile(root, 0)).toBe(newer)
+  })
+
+  it('filters out session files older than sinceMs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-find-'))
+    const now = Date.now()
+    await writeSession(root, 'cwddir/session-old', sessionJsonl(0), new Date(now - 60_000))
+    const fresh = await writeSession(root, 'cwddir/session-new', sessionJsonl(0), new Date(now))
+    expect(await findSessionFile(root, now - 1000)).toBe(fresh)
+    expect(await findSessionFile(root, now + 1000)).toBeNull()
+  })
+})
+
+describe('runEval timeout', () => {
+  it('collects a partial trace into the report when the dsh subprocess times out', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-timeout-'))
+    // fake dsh：--version 探针通过；正常调用时按 overlay 的 root 写部分会话日志后睡死，
+    // 由 runner 超时 SIGKILL——模拟真实超时只留下残缺 trace 的场景。
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+        'exec sleep 60',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: timeout-probe\nprompt: "hang"\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 })
+
+    expect(report.cases).toHaveLength(1)
+    const c = report.cases[0]!
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('timed out')
+    // 部分 trace 已进入 report（而不是全空）
+    expect(c.toolsCalled).toEqual(['bash'])
+    expect(c.toolCalls).toEqual([{ name: 'bash', callId: 'c1', argsJson: '{}' }])
+  }, 15_000)
 })

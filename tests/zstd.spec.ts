@@ -135,4 +135,12 @@ describe('fixture integrity', () => {
     // 首帧恰好是 header 行（session），后续帧为事件批
     expect(decodeZstdLog(bytes.subarray(frames[0]!.start, frames[0]!.end)).trim()).toMatch(/^\{.*"type":"session"/)
   })
+
+  it('readSessionHeader reads only the header line from both encodings', async () => {
+    const { readSessionHeader } = await import('../src/collector.ts')
+    const expected = expect.objectContaining({ type: 'session', delegationDepth: 0 })
+    expect(await readSessionHeader(join(fixtureDir, 'real-session.jsonl.zstd'))).toEqual(expected)
+    expect(await readSessionHeader(join(fixtureDir, 'real-session.jsonl'))).toEqual(expected)
+    expect(await readSessionHeader(join(fixtureDir, 'does-not-exist.jsonl'))).toBeNull()
+  })
 })

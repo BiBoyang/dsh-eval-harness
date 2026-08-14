@@ -1,13 +1,17 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { checkAssertions } from './assert.js'
-import { collectFromFile } from './collector.js'
+import { collectFromFile, readSessionHeader } from './collector.js'
 import { summarize } from './gate.js'
 import { renderJson, renderMarkdown } from './report.js'
 import { emptyTokenUsage } from './types.js'
-import type { CaseResult, EvalAssert, EvalCase, RunReport } from './types.js'
+import type { CaseResult, CollectedTrace, EvalAssert, EvalCase, RunReport } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
+
+/** harness 自身版本（写进 report.json，与 package.json 保持同步）。 */
+const harnessVersion = (createRequire(import.meta.url)('../package.json') as { version: string }).version
 
 export interface RunOptions {
   casesDir: string
@@ -188,25 +192,39 @@ export function buildDshArgs(profile: string, overlayPath: string, prompt: strin
 /**
  * 在 sessionRoot 下递归找本次用例落盘的会话日志（session.jsonl 或默认的
  * session.jsonl.zstd，两者 collector 都能读）。多条用例共用一个 root、按 cwd
- * 编码目录分开；用例串行执行，取 mtime >= sinceMs 的最新文件。
+ * 编码目录分开；用例串行执行，取 mtime >= sinceMs 的候选。
+ *
+ * subagent/workflow 用例会在同一 root 额外落下 `delegationDepth > 0` 的子会话
+ * （目录为裸 UUID，父会话目录带 `session-` 前缀）；纯 mtime 启发式可能错捡
+ * 子会话（真机已观测到 2~3 个候选文件）。多候选时读 header 行的
+ * `delegationDepth` 分档：父会话（0）> 不可解析 > 子会话（>0），同档取最新。
  */
-async function findSessionFile(dir: string, sinceMs: number): Promise<string | null> {
-  async function walk(d: string): Promise<{ path: string; mtime: number } | null> {
-    let best: { path: string; mtime: number } | null = null
+export async function findSessionFile(dir: string, sinceMs: number): Promise<string | null> {
+  async function walk(d: string): Promise<{ path: string; mtime: number }[]> {
+    const found: { path: string; mtime: number }[] = []
     for (const entry of await readdir(d, { withFileTypes: true })) {
       const p = join(d, entry.name)
       if (entry.isDirectory()) {
-        const sub = await walk(p)
-        if (sub && (!best || sub.mtime > best.mtime)) best = sub
+        found.push(...(await walk(p)))
       } else if (entry.name === 'session.jsonl' || entry.name === 'session.jsonl.zstd') {
         const mtime = (await stat(p)).mtimeMs
-        if (mtime >= sinceMs && (!best || mtime > best.mtime)) best = { path: p, mtime }
+        if (mtime >= sinceMs) found.push({ path: p, mtime })
       }
     }
-    return best
+    return found
   }
-  const found = await walk(dir)
-  return found ? found.path : null
+  const candidates = await walk(dir)
+  if (candidates.length === 0) return null
+  if (candidates.length === 1) return candidates[0]!.path
+  const ranked = await Promise.all(
+    candidates.map(async (c) => {
+      const header = await readSessionHeader(c.path)
+      const depth = typeof header?.delegationDepth === 'number' ? header.delegationDepth : null
+      return { ...c, rank: depth === 0 ? 0 : depth === null ? 1 : 2 }
+    }),
+  )
+  ranked.sort((a, b) => a.rank - b.rank || b.mtime - a.mtime)
+  return ranked[0]!.path
 }
 
 function runOne(
@@ -242,12 +260,37 @@ function runOne(
   })
 }
 
+/** 从采集结果提取 report 用例字段（超时部分 trace 与正常路径共用）。 */
+function traceFields(trace: CollectedTrace): Partial<Omit<CaseResult, 'status' | 'durationMs'>> {
+  return {
+    turnEnd: trace.turnEnd,
+    toolsCalled: trace.toolsCalled,
+    toolCalls: trace.toolCalls,
+    toolResults: trace.toolResults,
+    finalText: trace.finalText,
+    steps: trace.steps,
+    tokens: trace.tokens,
+    toolErrors: trace.toolErrors,
+  }
+}
+
+/** 超时/被杀后尽力采集部分 trace；任何失败返回 null（不掩盖超时本身）。 */
+async function tryCollectTrace(sessionBase: string, sinceMs: number): Promise<CollectedTrace | null> {
+  try {
+    const sessionFile = await findSessionFile(sessionBase, sinceMs)
+    return sessionFile ? await collectFromFile(sessionFile) : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 逐条跑用例：fork `dsh --profile <profile> --patch <overlay> <prompt>` 子进程。
  * overlay（<outputDir>/eval-overlay.patch.yml）把 session-persistence-jsonl 的 root 切到
  * 隔离目录；每条用例另有独立 workspace 作 cwd（session 按 cwd 编码分目录）。
  * 完成后 collector 解析落盘日志（session.jsonl 或默认 zstd，见 collectFromFile）
- * + 断言，写 report.json / report.md。
+ * + 断言，写 report.json / report.md。超时（SIGKILL）的用例也尽力采集部分
+ * trace 进 report（残缺尾帧由 decodeZstdLog 恢复），供排查超时原因。
  */
 export async function runEval(options: RunOptions): Promise<RunReport> {
   const profile = options.profile ?? 'headless'
@@ -285,7 +328,14 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     try {
       const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
       if (proc.timedOut) {
-        results.push({ ...base, status: 'error', error: `dsh subprocess timed out after ${timeoutMs}ms`, durationMs: Date.now() - startedAt })
+        const partial = await tryCollectTrace(sessionBase, startedAt)
+        results.push({
+          ...base,
+          ...(partial ? traceFields(partial) : {}),
+          status: 'error',
+          error: `dsh subprocess timed out after ${timeoutMs}ms`,
+          durationMs: Date.now() - startedAt,
+        })
         continue
       }
       const sessionFile = await findSessionFile(sessionBase, startedAt)
@@ -298,16 +348,9 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       const failures = checkAssertions(evalCase.assert, trace)
       results.push({
         ...base,
+        ...traceFields(trace),
         status: failures.length === 0 ? 'pass' : 'fail',
         failures,
-        turnEnd: trace.turnEnd,
-        toolsCalled: trace.toolsCalled,
-        toolCalls: trace.toolCalls,
-        toolResults: trace.toolResults,
-        finalText: trace.finalText,
-        steps: trace.steps,
-        tokens: trace.tokens,
-        toolErrors: trace.toolErrors,
         durationMs: Date.now() - startedAt,
       })
     } catch (err) {
@@ -317,7 +360,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
 
   const report: RunReport = {
     tool: 'dsh-eval-harness',
-    version: '0.1.0',
+    version: harnessVersion,
     startedAt: new Date().toISOString(),
     profile,
     cases: results,
