@@ -41,6 +41,17 @@ jobs:
 
       - run: pnpm build && pnpm test
 
+      # dsh 依赖树大（531 包），冷装 ~6min；单独一步装好，评测用全局 dsh 二进制，
+      # 避免 harness 探测 npx 时 60s 超时（npx 冷缓存解析必然超时）。
+      - name: Cache npm (dsh install)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-dsh-0.1.0-rc.6
+
+      - name: Install dsh
+        run: npm install -g @deepseek-ai/dsh@0.1.0-rc.6
+
       - name: Run eval cases (real LLM)
         # fork / 未配置 DEEPSEEK_API_KEY 的环境跳过评测，不直接红（build+test 仍会跑）
         if: env.DEEPSEEK_API_KEY != ''
@@ -50,7 +61,7 @@ jobs:
           const report = await runEval({
             casesDir: 'cases/real',
             outputDir: '.eval/out',
-            dshBin: 'npx -y @deepseek-ai/dsh',
+            dshBin: 'dsh',
           })
           console.log(JSON.stringify(report.summary))
           "
