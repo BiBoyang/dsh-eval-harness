@@ -66,7 +66,7 @@ assert:
 多步会话里同一段缓存的重复读回，计入会让上限随步数膨胀，故只展示、不计入。
 
 示例见 [`cases/example.case.yml`](cases/example.case.yml)。
-[`cases/real/`](cases/real/) 收录了 10 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
+[`cases/real/`](cases/real/) 收录了 11 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
 其中 `08-read-image.yml` 演示 `no_tool_errors` 如何拦下「工具报错但 agent 兜底答对」的假通过（在无视觉能力的模型上该用例预期 fail，属正常）。
 
 **解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量/map 序列、
@@ -126,20 +126,16 @@ REGRESSION echo-hello: pass -> fail
 
 `gate_json=true` 时输出单条 JSON（含 `verdict`/`exitCode`/`reasons`/`regressions` 等字段）。
 
-## CI 集成示例
+## CI 集成
 
-```yaml
-# .github/workflows/eval.yml（示意）
-- name: Run eval cases
-  run: dsh run "用 eval_run 跑 cases_dir=cases output_dir=.eval/out"
-- name: Gate
-  run: |
-    OUT=$(dsh run "用 eval_gate 对比 before=baseline/report.json after=.eval/out/report.json gate_json=true")
-    echo "$OUT"
-    exit $(echo "$OUT" | node -e "process.stdin.on('data',d=>process.exit(JSON.parse(d).exitCode))")
-```
+真实 workflow 见 [.github/workflows/eval.yml](.github/workflows/eval.yml)：`pnpm build && pnpm test`
+后直调 `lib/runner.js` 的 `runEval` 跑 `cases/real/` 全量（真实 LLM，需仓库 secret
+`DEEPSEEK_API_KEY`），再用 `lib/gate.js` 的 `computeGate` 对比 `baseline/report.json`，
+按 `EXIT_CODE` 拦截；report 作为 artifact 留存。用例或 harness 代码变更会触发重跑。
 
-首轮评测结果人工复核后，把 `report.json` 提交为 `baseline/report.json` 作为基准。
+`baseline/report.json` 已入库（首轮全量评测人工复核：`read-image` 在无视觉能力模型上
+预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate
+会把口径变化判成 WARN/FAIL。
 
 ## session trace 说明
 
@@ -156,12 +152,21 @@ collector 按文件头魔数自动识别编码：默认的多帧 zstd（`session
 纯文本 `session.jsonl` 走 UTF-8。两种编码都能读，eval_run 不再依赖 overlay 强制
 `compression: none`。真实落盘帧的契约快照见 `tests/fixtures/` 与 `tests/zstd.spec.ts`。
 
+会话发现（findSessionFile）：subagent/workflow 用例会在同一 root 额外落下
+`delegationDepth > 0` 的子会话日志；多候选时按 header 行的 `delegationDepth` 分档，
+父会话（0）优先于不可解析、再优先于子会话（>0），同档取最新 mtime。
+
+超时兜底：用例子进程超时（SIGKILL）时不再只记 error，而是尽力采集已落盘的部分
+trace（残缺尾帧由 `decodeZstdLog` 恢复）写进 report，供排查超时原因；采集失败
+不掩盖超时本身。
+
 ## 开发命令
 
 ```sh
-pnpm install   # 安装 devDependencies（typescript / vitest / @types/node）
+pnpm install   # 安装 devDependencies（typescript / vitest / biome / @types/node）
 pnpm build     # tsc → lib/（含类型声明 lib/types/）
 pnpm test      # vitest run tests
+pnpm lint      # biome check（仅 lint，format 未启用）
 ```
 
 ## 插件管理

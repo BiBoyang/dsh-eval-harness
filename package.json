@@ -1,9 +1,10 @@
 {
   "name": "dsh-eval-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 插件回归评测门禁：yaml 用例 + headless 驱动 + trace 断言 + baseline 门禁（eval_run / eval_gate）",
   "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@11.21.0",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -25,7 +26,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "test": "vitest run tests"
+    "test": "vitest run tests",
+    "lint": "biome check"
   },
   "dependencies": {
     "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
@@ -38,6 +40,7 @@
     "@deepseek-ai/cordis": ">=0.0.1-0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@deepseek-ai/cordis": "4.0.1",
     "@types/node": "^22.10.0",
     "typescript": "^5.9.2",
