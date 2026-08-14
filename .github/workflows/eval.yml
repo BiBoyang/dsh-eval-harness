@@ -24,6 +24,9 @@ jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # secrets 不能直接出现在 step 级 if: 里，先落到 job 级 env 再判空
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -40,9 +43,7 @@ jobs:
 
       - name: Run eval cases (real LLM)
         # fork / 未配置 DEEPSEEK_API_KEY 的环境跳过评测，不直接红（build+test 仍会跑）
-        if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        if: env.DEEPSEEK_API_KEY != ''
         run: |
           node --input-type=module -e "
           import { runEval } from './lib/runner.js'
@@ -55,7 +56,7 @@ jobs:
           "
 
       - name: Gate against baseline
-        if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+        if: env.DEEPSEEK_API_KEY != ''
         run: |
           OUT=$(node --input-type=module -e "
           import { computeGate, loadReport, renderGateText } from './lib/gate.js'
