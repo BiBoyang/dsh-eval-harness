@@ -1,0 +1,68 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`real on-disk contract fixture (P2) > locks the collected trace contract as a snapshot 1`] = `
+{
+  "events": 15,
+  "finalText": "<text>",
+  "skippedLines": 0,
+  "steps": 1,
+  "tokens": {
+    "cacheRead": 70528,
+    "cacheWrite": 0,
+    "input": 1070,
+    "output": 2135,
+    "reasoning": 1477,
+    "total": 4682,
+  },
+  "toolCalls": [
+    {
+      "argsJson": "<arguments>",
+      "callId": "call-2",
+      "name": "bash",
+    },
+    {
+      "argsJson": "<arguments>",
+      "callId": "call-6",
+      "name": "edit",
+    },
+    {
+      "argsJson": "<arguments>",
+      "callId": "call-8",
+      "name": "eval_run",
+    },
+  ],
+  "toolErrors": [
+    {
+      "error": "FsError: <code>",
+      "name": "edit",
+    },
+    {
+      "error": "<text>",
+      "name": "eval_run",
+    },
+  ],
+  "toolResults": [
+    {
+      "callId": "call-2",
+      "name": "bash",
+      "text": "<text>",
+    },
+    {
+      "callId": "call-6",
+      "name": "edit",
+      "text": "<text>",
+    },
+    {
+      "callId": "call-8",
+      "name": "eval_run",
+      "text": "<text>",
+    },
+  ],
+  "toolsCalled": [
+    "bash",
+    "edit",
+    "eval_run",
+  ],
+  "turnEnd": "completed",
+}
+`;

@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { decodeZstdLog } from './zstd.js'
 import { emptyTokenUsage } from './types.js'
 import type { CollectedTrace, ToolCallRecord, ToolError, ToolResultRecord } from './types.js'
 
@@ -41,9 +42,8 @@ function joinTextBlocks(blocks: unknown[]): string {
  *
  * 不良行（非 JSON / 无 type）跳过并计数，不抛错——collector 对脏 trace 保持健壮。
  *
- * TODO(v0.2)：多帧 zstd（session.jsonl.zstd）解析。v0.1 要求评测时配置
- * compression: 'none' 让 DSH 落盘纯 JSONL；多帧 zstd 需按帧边界逐帧解压
- * （参考官方 dsh-session-persistence-jsonl 的 scanZstdFrames/createZstdFrameDecoder）。
+ * 多帧 zstd（session.jsonl.zstd）的解码在 {@link collectFromFile} 里按魔数
+ * 自动识别（见 `./zstd.ts` 的 decodeZstdLog），本函数只吃纯 JSONL 文本。
  */
 export function collectFromJsonl(text: string): CollectedTrace {
   const toolsCalled: string[] = []
@@ -223,7 +223,17 @@ function truncate(s: string): string {
   return s.length > TOOL_ERROR_MAX ? s.slice(0, TOOL_ERROR_MAX) + '…' : s
 }
 
-/** 从落盘的 session.jsonl（纯 JSONL，compression: 'none'）采集观测结果 */
+/** zstd 帧魔数的字节形态（little-endian 0xFD2FB528 → `28 b5 2f fd`）。 */
+const ZSTD_MAGIC_BYTES = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+
+/**
+ * 从落盘会话日志采集观测结果。按文件头魔数自动识别编码：
+ * `session.jsonl.zstd`（多帧 Zstandard）走 {@link decodeZstdLog} 直读，
+ * `session.jsonl`（compression: 'none'）走 UTF-8 纯文本。v0.2 起两者都支持，
+ * eval_run 不再依赖 overlay 强制 `compression: none`。
+ */
 export async function collectFromFile(path: string): Promise<CollectedTrace> {
-  return collectFromJsonl(await readFile(path, 'utf8'))
+  const bytes = await readFile(path)
+  const isZstd = bytes.length >= 4 && bytes.subarray(0, 4).equals(ZSTD_MAGIC_BYTES)
+  return collectFromJsonl(isZstd ? decodeZstdLog(bytes) : bytes.toString('utf8'))
 }

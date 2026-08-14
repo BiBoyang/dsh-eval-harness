@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { buildDshArgs, buildOverlayYaml, splitDshBin } from '../src/runner.ts'
 
 describe('buildOverlayYaml', () => {
-  it('overrides session-persistence-jsonl row with isolated root and compression none', () => {
+  it('overrides session-persistence-jsonl row with isolated root (leaving default zstd compression)', () => {
     const yaml = buildOverlayYaml('/tmp/eval-out/.sessions')
     expect(yaml).toBe(
       [
@@ -11,10 +11,13 @@ describe('buildOverlayYaml', () => {
         "  name: '@deepseek-ai/dsh-session-persistence-jsonl'",
         '  config:',
         '    root: "/tmp/eval-out/.sessions"',
-        '    compression: none',
         '',
       ].join('\n'),
     )
+  })
+
+  it('does not force compression: none (v0.2 reads default multi-frame zstd directly)', () => {
+    expect(buildOverlayYaml('/tmp/x')).not.toContain('compression:')
   })
 
   it('quotes the @-containing package name (YAML @ is a reserved indicator)', () => {

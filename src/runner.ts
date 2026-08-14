@@ -161,8 +161,8 @@ function slugify(name: string): string {
 /**
  * 生成 --patch overlay：按 row id 整体替换 base bundle 的 session-persistence-jsonl
  * 配置（packages/bundle/base/cordis.patch.yml 的同名 row），把 session 落盘根切到
- * 隔离目录并关闭压缩（compression 是该插件的 config 字段，默认 zstd——
- * 见 packages/session/session-persistence-jsonl/src/index.ts）。
+ * 隔离目录。不再强制 `compression: none`——v0.2 起 collector 直接读默认的
+ * 多帧 zstd（session.jsonl.zstd），见 collector.collectFromFile。
  * root 用 JSON.stringify 转义为 YAML 双引号标量；name 含 @ 必须单引号包裹。
  */
 export function buildOverlayYaml(root: string): string {
@@ -172,7 +172,6 @@ export function buildOverlayYaml(root: string): string {
     "  name: '@deepseek-ai/dsh-session-persistence-jsonl'",
     '  config:',
     `    root: ${JSON.stringify(root)}`,
-    '    compression: none',
     '',
   ].join('\n')
 }
@@ -187,31 +186,27 @@ export function buildDshArgs(profile: string, overlayPath: string, prompt: strin
 }
 
 /**
- * 在 sessionRoot 下递归找本次用例落盘的 session.jsonl（compression: 'none' 产物）。
- * 多条用例共用一个 root、按 cwd 编码目录分开；用例串行执行，取 mtime >= sinceMs 的最新文件。
+ * 在 sessionRoot 下递归找本次用例落盘的会话日志（session.jsonl 或默认的
+ * session.jsonl.zstd，两者 collector 都能读）。多条用例共用一个 root、按 cwd
+ * 编码目录分开；用例串行执行，取 mtime >= sinceMs 的最新文件。
  */
 async function findSessionFile(dir: string, sinceMs: number): Promise<string | null> {
-  let best: { path: string; mtime: number } | null = null
-  let sawZstd = false
-  async function walk(d: string): Promise<void> {
+  async function walk(d: string): Promise<{ path: string; mtime: number } | null> {
+    let best: { path: string; mtime: number } | null = null
     for (const entry of await readdir(d, { withFileTypes: true })) {
       const p = join(d, entry.name)
-      if (entry.isDirectory()) await walk(p)
-      else if (entry.name === 'session.jsonl') {
+      if (entry.isDirectory()) {
+        const sub = await walk(p)
+        if (sub && (!best || sub.mtime > best.mtime)) best = sub
+      } else if (entry.name === 'session.jsonl' || entry.name === 'session.jsonl.zstd') {
         const mtime = (await stat(p)).mtimeMs
         if (mtime >= sinceMs && (!best || mtime > best.mtime)) best = { path: p, mtime }
-      } else if (entry.name === 'session.jsonl.zstd') {
-        sawZstd = true
       }
     }
+    return best
   }
-  await walk(dir)
-  if (!best && sawZstd) {
-    throw new Error(
-      `${PREFIX}: only session.jsonl.zstd found under '${dir}'; multi-frame zstd parsing is not supported in v0.1 — eval_run passes a --patch overlay with compression: none, so this means the overlay did not take effect`,
-    )
-  }
-  return best ? (best as { path: string }).path : null
+  const found = await walk(dir)
+  return found ? found.path : null
 }
 
 function runOne(
@@ -250,8 +245,9 @@ function runOne(
 /**
  * 逐条跑用例：fork `dsh --profile <profile> --patch <overlay> <prompt>` 子进程。
  * overlay（<outputDir>/eval-overlay.patch.yml）把 session-persistence-jsonl 的 root 切到
- * 隔离目录并设 compression: none；每条用例另有独立 workspace 作 cwd（session 按 cwd
- * 编码分目录）。完成后 collector 解析 session.jsonl + 断言，写 report.json / report.md。
+ * 隔离目录；每条用例另有独立 workspace 作 cwd（session 按 cwd 编码分目录）。
+ * 完成后 collector 解析落盘日志（session.jsonl 或默认 zstd，见 collectFromFile）
+ * + 断言，写 report.json / report.md。
  */
 export async function runEval(options: RunOptions): Promise<RunReport> {
   const profile = options.profile ?? 'headless'
@@ -295,7 +291,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       const sessionFile = await findSessionFile(sessionBase, startedAt)
       if (!sessionFile) {
         const detail = proc.code !== 0 ? ` (dsh exited ${proc.code}${proc.stderrTail ? `: ${proc.stderrTail}` : ''})` : ''
-        results.push({ ...base, status: 'error', error: `no session.jsonl found under '${sessionBase}'${detail}`, durationMs: Date.now() - startedAt })
+        results.push({ ...base, status: 'error', error: `no session log (session.jsonl / session.jsonl.zstd) found under '${sessionBase}'${detail}`, durationMs: Date.now() - startedAt })
         continue
       }
       const trace = await collectFromFile(sessionFile)

@@ -7,7 +7,7 @@
 给 DSH 插件/skill 的回归评测流程提供一个可进 CI 的门禁工具：
 
 1. 用 yaml 写评测用例（prompt + 期望行为断言）；
-2. `eval_run` 逐条 fork `dsh --profile headless --patch <overlay> <prompt>` 子进程跑真实 agent（overlay 把会话落盘切到隔离目录并关闭压缩，每条用例独立 workspace），解析落盘的 `session.jsonl` trace，执行断言，写 `report.json` + `report.md`；
+2. `eval_run` 逐条 fork `dsh --profile headless --patch <overlay> <prompt>` 子进程跑真实 agent（overlay 把会话落盘切到隔离目录，每条用例独立 workspace），解析落盘的 `session.jsonl` / `session.jsonl.zstd` trace（多帧 zstd 直读），执行断言，写 `report.json` + `report.md`；
 3. `eval_gate` 把本次报告与 baseline 报告对比，输出 `OVERALL=PASS|WARN|FAIL|N/A` 与退出码，供 CI 拦截回归。
 
 ## 安装
@@ -147,10 +147,14 @@ REGRESSION echo-hello: pass -> fail
 每行一帧信封 `{ type, seq, time, data }`）。`eval_run` 不污染环境变量，而是生成一个
 `--patch` overlay（`<output_dir>/eval-overlay.patch.yml`），按 row id 整体替换 base bundle 的
 `session-persistence-jsonl` 配置：把 `root` 切到隔离目录（默认 `<output_dir>/.sessions`，可用
-`session_root` 覆盖）并设 `compression: none`，让落盘为纯 JSONL；每条用例再以独立 workspace
-作 cwd（session 按 cwd 编码分目录）。子进程命令形如
-`dsh --profile headless --patch <overlay> <prompt>`（launcher flags 在前，prompt 是 app 位置参数放最后）。
-**v0.1 不解析多帧 zstd**（`session.jsonl.zstd`），发现只有 zstd 产物时会明确报错。
+`session_root` 覆盖）；每条用例再以独立 workspace 作 cwd（session 按 cwd 编码分目录）。
+子进程命令形如 `dsh --profile headless --patch <overlay> <prompt>`（launcher flags 在前，
+prompt 是 app 位置参数放最后）。
+
+collector 按文件头魔数自动识别编码：默认的多帧 zstd（`session.jsonl.zstd`）走
+`decodeZstdLog` 直读（结构扫描帧边界 + 逐帧解压，零外部依赖，仅 Node 内置 `node:zlib`），
+纯文本 `session.jsonl` 走 UTF-8。两种编码都能读，eval_run 不再依赖 overlay 强制
+`compression: none`。真实落盘帧的契约快照见 `tests/fixtures/` 与 `tests/zstd.spec.ts`。
 
 ## 开发命令
 
