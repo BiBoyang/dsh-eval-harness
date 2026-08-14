@@ -1,0 +1,505 @@
+{
+  "tool": "dsh-eval-harness",
+  "version": "0.2.0",
+  "startedAt": "2026-08-14T02:48:31.228Z",
+  "profile": "headless",
+  "cases": [
+    {
+      "name": "bash-tool",
+      "failures": [],
+      "toolsCalled": [
+        "bash"
+      ],
+      "toolCalls": [
+        {
+          "name": "bash",
+          "callId": "call_00_YR0DWrElPrx2HjZtq4CC9256",
+          "argsJson": "{\"command\": \"printf 'BASHOK-7f3a'\", \"description\": \"Run printf command to output marker\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "bash",
+          "callId": "call_00_YR0DWrElPrx2HjZtq4CC9256",
+          "text": "BASHOK-7f3a"
+        }
+      ],
+      "finalText": "命令 `printf 'BASHOK-7f3a'` 的标准输出为：\n\n```\nBASHOK-7f3a\n```\n\nBASHOK-7f3a",
+      "steps": 2,
+      "tokens": {
+        "input": 8192,
+        "output": 147,
+        "cacheRead": 8192,
+        "cacheWrite": 0,
+        "reasoning": 34,
+        "total": 8373
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 14704
+    },
+    {
+      "name": "fs-write-read",
+      "failures": [],
+      "toolsCalled": [
+        "write",
+        "read"
+      ],
+      "toolCalls": [
+        {
+          "name": "write",
+          "callId": "call_00_m33l9j7CdOic1XV5UlHH9979",
+          "argsJson": "{\"file_path\": \"/private/tmp/eval-p3-full/out/.workspace/fs-write-read/marker.txt\", \"content\": \"FSMARK-9c2e\"}"
+        },
+        {
+          "name": "read",
+          "callId": "call_00_ET_spSfIpjfbFhtSBIvX6wA9101",
+          "argsJson": "{\"file_path\": \"/private/tmp/eval-p3-full/out/.workspace/fs-write-read/marker.txt\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "write",
+          "callId": "call_00_m33l9j7CdOic1XV5UlHH9979",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/fs-write-read/marker.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "read",
+          "callId": "call_00_ET_spSfIpjfbFhtSBIvX6wA9101",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/fs-write-read/marker.txt</path>\n<type>file</type>\n<content>\n1: FSMARK-9c2e\n\n(End of file - total 1 lines)\n</content>"
+        }
+      ],
+      "finalText": "已完成：\n\n1. ✅ 用 write 工具创建了 `marker.txt`，内容为 `FSMARK-9c2e`\n2. ✅ 用 read 工具读回该文件，读到的内容为：`FSMARK-9c2e`\n3. ✅ 原样回复：**FSMARK-9c2e**",
+      "steps": 3,
+      "tokens": {
+        "input": 8509,
+        "output": 339,
+        "cacheRead": 16512,
+        "cacheWrite": 0,
+        "reasoning": 113,
+        "total": 8961
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 11676
+    },
+    {
+      "name": "fs-search",
+      "failures": [],
+      "toolsCalled": [
+        "write",
+        "grep"
+      ],
+      "toolCalls": [
+        {
+          "name": "write",
+          "callId": "call_00_QNnzjQWQqtWF1TLmf4vc7524",
+          "argsJson": "{\"file_path\": \"a.txt\", \"content\": \"alpha\\nbeta\\nGAMMA-3e8f\\n\"}"
+        },
+        {
+          "name": "grep",
+          "callId": "call_00_ET_QczzQZZKhQtcGfJVpS2m1059",
+          "argsJson": "{\"pattern\": \"GAMMA\", \"path\": \"a.txt\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "write",
+          "callId": "call_00_QNnzjQWQqtWF1TLmf4vc7524",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/fs-search/a.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "grep",
+          "callId": "call_00_ET_QczzQZZKhQtcGfJVpS2m1059",
+          "text": "Found 1 match\n\na.txt\nLine 3: GAMMA-3e8f"
+        }
+      ],
+      "finalText": "已完成全部步骤：\n\n1. ✅ 用 write 工具创建了 a.txt，内容为三行：alpha、beta、GAMMA-3e8f\n2. ✅ 用 grep 工具在 a.txt 中搜索 GAMMA，命中 1 处（第 3 行）\n3. ✅ grep 命中的那一行内容原样回复如下：\n\n**GAMMA-3e8f**",
+      "steps": 3,
+      "tokens": {
+        "input": 8284,
+        "output": 384,
+        "cacheRead": 16768,
+        "cacheWrite": 0,
+        "reasoning": 142,
+        "total": 8810
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 10924
+    },
+    {
+      "name": "todo-tool",
+      "failures": [],
+      "toolsCalled": [
+        "todo_write"
+      ],
+      "toolCalls": [
+        {
+          "name": "todo_write",
+          "callId": "call_00_A2dUkFmeFedvAqczDKnK2267",
+          "argsJson": "{\"todos\": [{\"content\": \"安装插件\", \"status\": \"pending\"}, {\"content\": \"跑评测\", \"status\": \"pending\"}]}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "todo_write",
+          "callId": "call_00_A2dUkFmeFedvAqczDKnK2267",
+          "text": "Updated todo list: 2 pending, 0 in progress, 0 completed."
+        }
+      ],
+      "finalText": "TODODONE",
+      "steps": 2,
+      "tokens": {
+        "input": 8179,
+        "output": 114,
+        "cacheRead": 8192,
+        "cacheWrite": 0,
+        "reasoning": 37,
+        "total": 8330
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 9382
+    },
+    {
+      "name": "edit-tool",
+      "failures": [],
+      "toolsCalled": [
+        "write",
+        "edit",
+        "read"
+      ],
+      "toolCalls": [
+        {
+          "name": "write",
+          "callId": "call_00_wN8jk1iEv4DehXNfmfQx1059",
+          "argsJson": "{\"file_path\": \"note.txt\", \"content\": \"hello world\\n\"}"
+        },
+        {
+          "name": "edit",
+          "callId": "call_00_ET_jyQGck6zMGvg5ccJT67H7749",
+          "argsJson": "{\"file_path\": \"note.txt\", \"old_string\": \"world\", \"new_string\": \"there\"}"
+        },
+        {
+          "name": "read",
+          "callId": "call_00_ET_t2b0RWnB8H5N3zrn7FBy1758",
+          "argsJson": "{\"file_path\": \"note.txt\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "write",
+          "callId": "call_00_wN8jk1iEv4DehXNfmfQx1059",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/edit-tool/note.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "edit",
+          "callId": "call_00_ET_jyQGck6zMGvg5ccJT67H7749",
+          "text": "The file /private/tmp/eval-p3-full/out/.workspace/edit-tool/note.txt has been updated successfully."
+        },
+        {
+          "name": "read",
+          "callId": "call_00_ET_t2b0RWnB8H5N3zrn7FBy1758",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/edit-tool/note.txt</path>\n<type>file</type>\n<content>\n1: hello there\n\n(End of file - total 1 lines)\n</content>"
+        }
+      ],
+      "finalText": "三步已依次完成：\n\n1. ✅ 用 write 工具创建了 note.txt，内容为一行 `hello world`\n2. ✅ 用 edit 工具将 `world` 替换为 `there`\n3. ✅ 用 read 工具读回文件，读到的内容原样如下：\n\n```\nhello there\n```",
+      "steps": 4,
+      "tokens": {
+        "input": 8554,
+        "output": 375,
+        "cacheRead": 24960,
+        "cacheWrite": 0,
+        "reasoning": 120,
+        "total": 9049
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 13118
+    },
+    {
+      "name": "glob-tool",
+      "failures": [],
+      "toolsCalled": [
+        "write",
+        "write",
+        "write",
+        "glob"
+      ],
+      "toolCalls": [
+        {
+          "name": "write",
+          "callId": "call_00_ubMCQAAJTCfhSQaMT9nt0344",
+          "argsJson": "{\"file_path\": \"foo-1.txt\", \"content\": \"content of foo-1\\n\"}"
+        },
+        {
+          "name": "write",
+          "callId": "call_01_rWRKlriRJvqBCwNIrrVS7725",
+          "argsJson": "{\"file_path\": \"foo-2.txt\", \"content\": \"content of foo-2\\n\"}"
+        },
+        {
+          "name": "write",
+          "callId": "call_02_A7DT6tFYl2GNi7gYS4SC1390",
+          "argsJson": "{\"file_path\": \"bar.txt\", \"content\": \"content of bar\\n\"}"
+        },
+        {
+          "name": "glob",
+          "callId": "call_00_ET_2l9SAQn9Kg4s2EotyMBk3868",
+          "argsJson": "{\"pattern\": \"foo-*.txt\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "write",
+          "callId": "call_00_ubMCQAAJTCfhSQaMT9nt0344",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/glob-tool/foo-1.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "write",
+          "callId": "call_01_rWRKlriRJvqBCwNIrrVS7725",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/glob-tool/foo-2.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "write",
+          "callId": "call_02_A7DT6tFYl2GNi7gYS4SC1390",
+          "text": "<path>/private/tmp/eval-p3-full/out/.workspace/glob-tool/bar.txt</path>\n<type>file</type>\n<content>\nCreated file\n</content>"
+        },
+        {
+          "name": "glob",
+          "callId": "call_00_ET_2l9SAQn9Kg4s2EotyMBk3868",
+          "text": "foo-1.txt\nfoo-2.txt"
+        }
+      ],
+      "finalText": "三个文件已创建（foo-1.txt、foo-2.txt、bar.txt），glob 匹配模式 `foo-*.txt` 返回的文件列表如下，原样回复：\n\n- foo-1.txt\n- foo-2.txt",
+      "steps": 3,
+      "tokens": {
+        "input": 8510,
+        "output": 390,
+        "cacheRead": 16896,
+        "cacheWrite": 0,
+        "reasoning": 95,
+        "total": 8995
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 12393
+    },
+    {
+      "name": "web-search",
+      "failures": [],
+      "toolsCalled": [
+        "web_search"
+      ],
+      "toolCalls": [
+        {
+          "name": "web_search",
+          "callId": "call_00_TEQaNbLNS9Cwj6gO76Jy0651",
+          "argsJson": "{\"query\": \"DeepSeek\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "web_search",
+          "callId": "call_00_TEQaNbLNS9Cwj6gO76Jy0651",
+          "text": "Sources:\n- [DeepSeek launches V4-Pro model with stronger AI agent capabilities](https://peoplesdaily.pdnews.cn/tech/er/30052925726)\n- [China's DeepSeek upgrades its V4 Pro model](http://ex.chinadaily.com.cn/exchange/partners/70/rss/channel/www/columns/y38633/stories/WS6a7d2bf7a31073853ec531ce.html)\n- [DeepSeek 官网 API 文档新增“DeepSeek-V4-Pro-0813”模型](https://www.ithome.com/0/988/998.htm)\n- [DeepSeek推出V4-Pro-0813模型 百万Token输出仅需0.87美元](https://www.163.com/dy/article/L46O94Q40511BLFD.html?spss=dy_author&referFrom=)\n- [DeepSeek](https://sj.qq.com/appdetail/com.deepseek.chat?g_f=1260693&scenevia=ANDROIDCPS.CPS.1260693)\n- [DeepSeek officially launches V4 Pro as China's AI race heats up](https://www.thenews.com.pk/latest/1412183-deepseek-officially-launches-v4-pro-as-chinas-ai-race-heats-up)\n- [DeepSeek Officially Launches V4 Pro Model As AI Competition Intensifies](https://www.arise.tv/deepseek-officially-launches-v4-pro-model-as-ai-competition-intensifies/)\n- [DeepSeek V4 Pro正式上线：增强Agent能力，比肩Fable 5](https://m.thepaper.cn/detail/33773837)\n\n(Showing the first 8 sources. Refine the query for more.)\n\nCite the relevant URLs above as markdown links in your answer."
+        }
+      ],
+      "finalText": "已通过 web_search 工具真实搜索关键词「DeepSeek」，以下是搜索结果的前几条标题/摘要：\n\n1. **[DeepSeek launches V4-Pro model with stronger AI agent capabilities](https://peoplesdaily.pdnews.cn/tech/er/30052925726)** — 人民日报海外网：DeepSeek 发布 V4-Pro 模型，具备更强的 AI Agent 能力。\n\n2. **[China's DeepSeek upgrades its V4 Pro model](http://ex.chinadaily.com.cn/exchange/partners/70/rss/channel/www/columns/y38633/stories/WS6a7d2bf7a31073853ec531ce.html)** — 中国日报：中国的 DeepSeek 升级了其 V4 Pro 模型。\n\n3. **[DeepSeek 官网 API 文档新增\"DeepSeek-V4-Pro-0813\"模型](https://www.ithome.com/0/988/998.htm)** — IT之家：DeepSeek 官网 API 文档新增 DeepSeek-V4-Pro-0813 模型。\n\n4. **[DeepSeek推出V4-Pro-0813模型 百万Token输出仅需0.87美元](https://www.163.com/dy/article/L46O94Q40511BLFD.html?spss=dy_author&referFrom=)** — 网易：DeepSeek 推出 V4-Pro-0813 模型，百万 Token 输出仅需 0.87 美元。\n\n5. **[DeepSeek officially launches V4 Pro as China's AI race heats up](https://www.thenews.com.pk/latest/1412183-deepseek-officially-launches-v4-pro-as-chinas-ai-race-heats-up)** — The News：DeepSeek 正式发布 V4 Pro，中国 AI 竞赛升温。\n\n6. **[DeepSeek Officially Launches V4 Pro Model As AI Competition Intensifies](https://www.arise.tv/deepseek-officially-launches-v4-pro-model-as-ai-competition-intensifies/)** — Arise TV：DeepSeek 正式推出 V4 Pro 模型，AI 竞争加剧。\n\n7. **[DeepSeek V4 Pro正式上线：增强Agent能力，比肩Fable 5](https://m.thepaper.cn/detail/73833737)** — 澎湃新闻：DeepSeek V4 Pro 正式上线，增强 Agent 能力。\n\n**总结**：本次搜索围绕 **deepseek** 的热点集中在 **DeepSeek V4-Pro / V4-Pro-0813 新模型发布**，主打更强的 Agent 能力，且 API 输出价格很低（百万 Token 约 0.87 美元）。",
+      "steps": 2,
+      "tokens": {
+        "input": 8549,
+        "output": 752,
+        "cacheRead": 8192,
+        "cacheWrite": 0,
+        "reasoning": 129,
+        "total": 9430
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 20320
+    },
+    {
+      "name": "read-image",
+      "failures": [
+        "no_tool_errors: tool 'read_image' returned error: Error: cannot read \"pixel.png\" as an image: model \"deepseek-v4-flash\" does not declare image input; switch to an image-capable model to read images"
+      ],
+      "toolsCalled": [
+        "bash",
+        "read_image",
+        "bash"
+      ],
+      "toolCalls": [
+        {
+          "name": "bash",
+          "callId": "call_00_7w181ZLqDV91pHWamcgL1425",
+          "argsJson": "{\"command\": \"printf 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' | base64 -d > pixel.png && ls -la pixel.png && file pixel.png\", \"description\": \"Decode base64 into pixel.png and verify file\"}"
+        },
+        {
+          "name": "read_image",
+          "callId": "call_00_bAbVY2QszIW9mLXxhkYB3861",
+          "argsJson": "{\"file_path\": \"pixel.png\"}"
+        },
+        {
+          "name": "bash",
+          "callId": "call_00_qMQPKM2fCO1eX8r1RJ9b8867",
+          "argsJson": "{\"command\": \"xxd pixel.png | head -3; python3 -c \\\"\\nimport struct\\nwith open('pixel.png','rb') as f:\\n    data = f.read()\\n# IHDR chunk: bytes 16-19 = width, 20-23 = height (big-endian)\\nw, h = struct.unpack('>II', data[16:24])\\nprint(f'width={w} height={h}')\\n\\\"\", \"description\": \"Parse PNG IHDR header to confirm width and height\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "bash",
+          "callId": "call_00_7w181ZLqDV91pHWamcgL1425",
+          "text": "-rw-r--r--@ 1 boyang  wheel  70 Aug 14 10:47 pixel.png\npixel.png: PNG image data, 1 x 1, 8-bit/color RGBA, non-interlaced\n"
+        },
+        {
+          "name": "read_image",
+          "callId": "call_00_bAbVY2QszIW9mLXxhkYB3861",
+          "text": "Error: cannot read \"pixel.png\" as an image: model \"deepseek-v4-flash\" does not declare image input; switch to an image-capable model to read images"
+        },
+        {
+          "name": "bash",
+          "callId": "call_00_qMQPKM2fCO1eX8r1RJ9b8867",
+          "text": "00000000: 8950 4e47 0d0a 1a0a 0000 000d 4948 4452  .PNG........IHDR\n00000010: 0000 0001 0000 0001 0806 0000 001f 15c4  ................\n00000020: 8900 0000 0d49 4441 5478 da63 6460 f85f  .....IDATx.cd`._\nwidth=1 height=1\n"
+        }
+      ],
+      "finalText": "三个步骤已按顺序完成：\n\n1. **bash 命令生成图片** ✅ — 已执行 `printf '...' | base64 -d > pixel.png`，生成了 70 字节的 pixel.png 文件；\n2. **read_image 读取图片** ✅（已真实调用）— 工具调用本身成功发起，但当前模型 deepseek-v4-flash 未声明图像输入能力，无法直接渲染图片内容，工具返回了错误提示；\n3. **确认像素尺寸** — 作为替代验证，我从 PNG 二进制头部 IHDR 块直接解析出了尺寸字段：`width=1 height=1`，与 `file` 命令输出的 \"PNG image data, 1 x 1, 8-bit/color RGBA\" 完全一致。\n\n**这张图片的像素尺寸是 1 x 1（即 1x1 像素）。**",
+      "steps": 4,
+      "tokens": {
+        "input": 8609,
+        "output": 981,
+        "cacheRead": 25984,
+        "cacheWrite": 0,
+        "reasoning": 384,
+        "total": 9974
+      },
+      "toolErrors": [
+        {
+          "name": "read_image",
+          "error": "Error: cannot read \"pixel.png\" as an image: model \"deepseek-v4-flash\" does not declare image input; switch to an image-capable model to read images"
+        }
+      ],
+      "turnEnd": "completed",
+      "status": "fail",
+      "durationMs": 17266
+    },
+    {
+      "name": "subagent-delegate",
+      "failures": [],
+      "toolsCalled": [
+        "subagent"
+      ],
+      "toolCalls": [
+        {
+          "name": "subagent",
+          "callId": "call_00_aCsgmNrH0aZ3naHg79ez4533",
+          "argsJson": "{\"description\": \"回复固定字符串\", \"prompt\": \"直接回复固定字符串 SUBAOK-5b1d，不要调用任何工具、不要输出其他内容。\", \"run_in_background\": false}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "subagent",
+          "callId": "call_00_aCsgmNrH0aZ3naHg79ez4533",
+          "text": "SUBAOK-5b1d"
+        }
+      ],
+      "finalText": "子代理的最终回复原样转述如下：\n\nSUBAOK-5b1d",
+      "steps": 2,
+      "tokens": {
+        "input": 8190,
+        "output": 263,
+        "cacheRead": 8320,
+        "cacheWrite": 0,
+        "reasoning": 140,
+        "total": 8593
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 12138
+    },
+    {
+      "name": "workflow-fanout",
+      "failures": [],
+      "toolsCalled": [
+        "workflow"
+      ],
+      "toolCalls": [
+        {
+          "name": "workflow",
+          "callId": "call_00_5U9DLTun971xzdzpVrYZ6553",
+          "argsJson": "{\"meta\": {\"name\": \"minimal-fanout\", \"description\": \"Minimal workflow fanning out two subagents (AAA and BBB) and aggregating their results.\"}, \"script\": \"const results = await parallel([\\n  () => agent('Reply with exactly: AAA'),\\n  () => agent('Reply with exactly: BBB'),\\n]);\\nreturn { first: results[0], second: results[1] };\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "workflow",
+          "callId": "call_00_5U9DLTun971xzdzpVrYZ6553",
+          "text": "workflow \"minimal-fanout\" completed (2 agents).\nReturn value:\n{\n  \"first\": \"AAA\",\n  \"second\": \"BBB\"\n}"
+        }
+      ],
+      "finalText": "工作流 `minimal-fanout` 已执行完成（2 个子代理）。\n\n**汇总结果：**\n- 第一个子代理（fan out 分支 1）回复：**AAA**\n- 第二个子代理（fan out 分支 2）回复：**BBB**\n\n两者均已成功聚合，最终汇总为：**AAA** 和 **BBB**。",
+      "steps": 2,
+      "tokens": {
+        "input": 8235,
+        "output": 382,
+        "cacheRead": 8320,
+        "cacheWrite": 0,
+        "reasoning": 167,
+        "total": 8784
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 12370
+    },
+    {
+      "name": "bash-only",
+      "failures": [],
+      "toolsCalled": [
+        "bash"
+      ],
+      "toolCalls": [
+        {
+          "name": "bash",
+          "callId": "call_00_OchiO3DNFfoedXl78gZS1625",
+          "argsJson": "{\"command\": \"printf 'EXACTOK-42'\", \"description\": \"Print EXACTOK-42 to stdout\"}"
+        }
+      ],
+      "toolResults": [
+        {
+          "name": "bash",
+          "callId": "call_00_OchiO3DNFfoedXl78gZS1625",
+          "text": "EXACTOK-42"
+        }
+      ],
+      "finalText": "EXACTOK-42",
+      "steps": 2,
+      "tokens": {
+        "input": 8224,
+        "output": 145,
+        "cacheRead": 8192,
+        "cacheWrite": 0,
+        "reasoning": 63,
+        "total": 8432
+      },
+      "toolErrors": [],
+      "turnEnd": "completed",
+      "status": "pass",
+      "durationMs": 9854
+    }
+  ],
+  "summary": {
+    "total": 11,
+    "passed": 10,
+    "failed": 1,
+    "errored": 0
+  }
+}

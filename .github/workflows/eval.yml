@@ -1,0 +1,71 @@
+name: eval
+
+# DSH 插件回归评测门禁：跑 cases/real 全量用例（真实 LLM，需 DEEPSEEK_API_KEY），
+# 与 baseline/report.json 对比出 OVERALL 判定。手动触发或 baseline 相关文件变更时触发；
+# 用例/harness 代码变更时必须重跑 baseline（见 README「首轮评测结果人工复核后提交 baseline」）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cases/**'
+      - 'src/**'
+      - 'baseline/**'
+      - '.github/workflows/eval.yml'
+  pull_request:
+    paths:
+      - 'cases/**'
+      - 'src/**'
+      - 'baseline/**'
+      - '.github/workflows/eval.yml'
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build && pnpm test
+
+      - name: Run eval cases (real LLM)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          node --input-type=module -e "
+          import { runEval } from './lib/runner.js'
+          const report = await runEval({
+            casesDir: 'cases/real',
+            outputDir: '.eval/out',
+            dshBin: 'npx -y @deepseek-ai/dsh',
+          })
+          console.log(JSON.stringify(report.summary))
+          "
+
+      - name: Gate against baseline
+        run: |
+          OUT=$(node --input-type=module -e "
+          import { computeGate, loadReport, renderGateText } from './lib/gate.js'
+          const after = await loadReport('.eval/out/report.json')
+          const before = await loadReport('baseline/report.json', true)
+          console.log(renderGateText(computeGate(before, after, false)))
+          ")
+          echo "$OUT"
+          exit $(echo "$OUT" | sed -n 's/^EXIT_CODE=//p')
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: .eval/out/
+          retention-days: 14
