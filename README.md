@@ -42,6 +42,7 @@ name: 用例名                    # 唯一，gate 按 name 对比 baseline
 prompt: "发给 agent 的内容"      # 多行可用块标量 `|`
 require_plugins: [some-plugin]  # 可选，元信息
 tags: [fast]                    # 可选，标签；eval_run 的 tags 筛选按任一命中匹配
+retries: 1                      # 可选，失败重跑次数（非负整数，缺省用 eval_run 的全局 retries）
 assert:
   turn_end: completed           # turn/end 事件的 reason.kind
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
@@ -87,6 +88,7 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | `timeout_ms` | integer | 否 | `600000` | 单条用例子进程超时 |
 | `dsh_bin` | string | 否 | `$DSH_BIN` 或 `dsh` | dsh 可执行命令，按空白拆分；本机无全局 dsh 时用 `npx -y @deepseek-ai/dsh` |
 | `concurrency` | integer | 否 | `1` | 并行跑用例的并发数；每条用例独占 session 根与 workspace，并行互不干扰 |
+| `retries` | integer | 否 | `0` | 失败重跑的全局默认次数；单条用例最多跑 retries+1 次，任一 attempt 全过即停（fail 和 error 含超时都触发重跑）；用例 yaml 的 `retries` 优先于此值 |
 | `tags` | string | 否 | - | 逗号分隔标签筛选：只跑 yaml `tags` 命中任一的用例 |
 | `only` | string | 否 | - | 逗号分隔用例名（精确匹配）；与 tags 同给时取交集；筛选后无命中会直接报错（防 CI 笔误空跑假绿） |
 

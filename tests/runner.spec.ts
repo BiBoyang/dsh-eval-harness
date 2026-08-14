@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, utimes, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -128,6 +128,26 @@ describe('parseCase tags', () => {
 
   it('rejects non-string tags', () => {
     expect(() => parseCase('name: a\nprompt: "p"\ntags: [1]\nassert: {}\n', 'a.yml')).toThrow(/'tags' must be a list of strings/)
+  })
+})
+
+describe('parseCase retries', () => {
+  it('parses retries as a non-negative integer', () => {
+    const c = parseCase('name: a\nprompt: "p"\nretries: 2\nassert:\n  turn_end: completed\n', 'a.yml')
+    expect(c.retries).toBe(2)
+  })
+
+  it('omits retries when not set', () => {
+    const c = parseCase('name: a\nprompt: "p"\nassert:\n  turn_end: completed\n', 'a.yml')
+    expect(c.retries).toBeUndefined()
+  })
+
+  it('rejects negative / non-integer / non-number retries', () => {
+    for (const value of ['-1', '1.5', '"2"']) {
+      expect(() => parseCase(`name: a\nprompt: "p"\nretries: ${value}\nassert:\n  turn_end: completed\n`, 'a.yml')).toThrow(
+        /'retries' must be a non-negative integer/,
+      )
+    }
   })
 })
 
@@ -303,5 +323,172 @@ describe('runEval timeout', () => {
     // 部分 trace 已进入 report（而不是全空）
     expect(c.toolsCalled).toEqual(['bash'])
     expect(c.toolCalls).toEqual([{ name: 'bash', callId: 'c1', argsJson: '{}' }])
+  }, 15_000)
+})
+
+describe('runEval retries (flaky 治理)', () => {
+  /** 最小会话头 + 可选 tool/call 帧：有 bash 调用即过 tools_called 断言，无则 fail */
+  const header = '{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":0}'
+  const bashCall = '{"type":"tool/call","seq":1,"time":1,"data":{"turn":1,"step":1,"callId":"c1","name":"bash","arguments":"{}"}}'
+
+  /**
+   * fake dsh：--version 探针通过；正常调用按 overlay root 落 session.jsonl。
+   * 跨 attempt 状态记在 session 根下的 .attempts 计数文件（session 根跨 attempt
+   * 复用；workspace 每次 attempt 被 runner 清空重建，状态不能放那边）。
+   * - passFrom：第 N 个 attempt 起落带 bash 调用的过测 trace，之前落无工具调用的
+   *   fail trace；
+   * - hangBeforePass：未过测的 attempt 落 trace 后睡死（模拟超时 error 触发重跑）；
+   * - sideEffect：attempt 1 在 workspace（cwd）写 side-effect.txt——用于验证
+   *   attempt 间 workspace 被清空：后续 attempt 若发现文件还在则落 fail trace。
+   */
+  const writeRetryFakeDsh = async (
+    root: string,
+    opts: { passFrom: number; hangBeforePass?: boolean; sideEffect?: boolean },
+  ): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh')
+    const script = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      'state="$root/.attempts"',
+      'n=0',
+      '[ -f "$state" ] && n=$(cat "$state")',
+      'n=$((n + 1))',
+      'echo "$n" > "$state"',
+      ...(opts.sideEffect
+        ? [
+            'if [ "$n" -eq 1 ]; then echo x > side-effect.txt; fi',
+            `if [ "$n" -ge 2 ] && [ -f side-effect.txt ]; then printf '%s\\n' '${header}' > "$dir/session.jsonl"; exit 0; fi`,
+          ]
+        : []),
+      `if [ "$n" -ge ${opts.passFrom} ]; then`,
+      `  printf '%s\\n' '${header}' '${bashCall}' > "$dir/session.jsonl"`,
+      'else',
+      `  printf '%s\\n' '${header}' > "$dir/session.jsonl"`,
+      ...(opts.hangBeforePass ? ['  exec sleep 60'] : []),
+      'fi',
+      '',
+    ]
+    await writeFile(fakeBin, script.join('\n'), { mode: 0o755 })
+    return fakeBin
+  }
+
+  const firstCase = (report: { cases: { name: string; status: string; attempts: number; flaky?: boolean }[] }) => {
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    return c
+  }
+
+  it('retries: 1 reruns a failing case; final pass is marked flaky with attempts in report.md', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-retry-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 2 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: flaky-case\nprompt: "p"\nretries: 1\nassert:\n  tools_called: [bash]\n')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 10_000 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(2)
+    expect(c.flaky).toBe(true)
+    const md = await readFile(join(out, 'report.md'), 'utf8')
+    expect(md).toContain('PASS (flaky, 2 attempts)')
+  }, 15_000)
+
+  it('retries: 0 keeps the single failure without flaky marking', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-retry0-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 99 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: stable-fail\nprompt: "p"\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('fail')
+    expect(c.attempts).toBe(1)
+    expect(c.flaky).toBeUndefined()
+  }, 15_000)
+
+  it('a first-attempt pass never reruns even with retries available', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-noretry-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 1 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: stable-pass\nprompt: "p"\nretries: 2\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(1)
+    expect(c.flaky).toBeUndefined()
+  }, 15_000)
+
+  it('global retries is the default when the case yaml omits retries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-gdef-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 2 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: global-default\nprompt: "p"\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, retries: 1, timeoutMs: 10_000 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(2)
+    expect(c.flaky).toBe(true)
+  }, 15_000)
+
+  it('case yaml retries overrides the global default', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-govr-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 99 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    // yaml retries: 0 覆盖全局 retries: 2——若全局生效会跑满 3 次 attempt
+    await writeFile(join(casesDir, 'f.yml'), 'name: override\nprompt: "p"\nretries: 0\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, retries: 2, timeoutMs: 10_000 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('fail')
+    expect(c.attempts).toBe(1)
+    expect(c.flaky).toBeUndefined()
+  }, 15_000)
+
+  it('wipes the workspace between attempts (fs side effects cannot fake a pass)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-wipe-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 2, sideEffect: true })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: wipe\nprompt: "p"\nretries: 1\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+
+    // attempt 1 写 side-effect.txt 且 fail；attempt 2 只有在 workspace 已被清空
+    // （文件不存在）时才落过测 trace——最终 pass 即证明清空生效
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(2)
+    expect(c.flaky).toBe(true)
+  }, 15_000)
+
+  it('error attempts (timeout) also trigger a retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-rto-'))
+    const fakeBin = await writeRetryFakeDsh(root, { passFrom: 2, hangBeforePass: true })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'f.yml'), 'name: timeout-retry\nprompt: "p"\nretries: 1\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 })
+
+    const c = firstCase(report)
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(2)
+    expect(c.flaky).toBe(true)
   }, 15_000)
 })

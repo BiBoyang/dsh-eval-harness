@@ -6,6 +6,16 @@
 
 ### Added
 
+- flaky 治理（失败才重跑）：用例 yaml 新增 `retries`（非负整数，缺省用
+  `eval_run` 的全局 `retries`，默认 0 不重跑）。单条用例最多跑 `retries+1`
+  次，任一 attempt 断言全过即停；fail 和 error（含超时）都触发重跑，最终
+  状态取最后一次 attempt。每次 attempt 前清空重建该用例的 workspace（防
+  上一次 attempt 的 fs 副作用让重跑假通过），session 根复用并按 attempt
+  起点过滤只采集本次 trace。`CaseResult` 新增 `attempts`（实际执行次数）
+  与 `flaky`（最终 pass 但中途有失败 attempt 时 true），report.md 状态列
+  标记 `PASS (flaky, N attempts)`。
+  - 口径变化：`durationMs` 改为全 attempt 总耗时（含重跑），让 flaky 的真实
+    成本可见；gate 不读该字段，不受影响。
 - 并行跑用例：`eval_run` 新增 `concurrency`（默认 1 串行）。每条用例改为独占一份
   overlay（`eval-overlay-<序号>-<用例名>.patch.yml`）与 session 根（`<session_root>/<序号>-<用例名>`，
   序号是加载序——slug 化不是唯一键），并行时互不干扰；report 用例顺序仍与 cases

@@ -50,6 +50,12 @@ export function apply(ctx: Context): void {
           default: 1,
           description: 'How many cases run in parallel (default 1, serial). Each case gets its own session root and workspace, so parallel runs are isolated.',
         },
+        retries: {
+          type: 'integer',
+          default: 0,
+          description:
+            'Global default retry-on-failure count (default 0, no retry). A case runs at most retries+1 attempts and stops at the first fully passing attempt; fail and error (incl. timeout) both trigger a retry. The per-case yaml retries field takes precedence over this value.',
+        },
         tags: {
           type: 'string',
           description: 'Comma-separated tag filter: only run cases whose yaml tags field contains at least one of these.',
@@ -71,6 +77,7 @@ export function apply(ctx: Context): void {
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
           dshBin: args.dsh_bin === undefined ? undefined : String(args.dsh_bin),
           concurrency: typeof args.concurrency === 'number' ? args.concurrency : undefined,
+          retries: typeof args.retries === 'number' ? args.retries : undefined,
           tags: splitCsv(args.tags),
           only: splitCsv(args.only),
         })

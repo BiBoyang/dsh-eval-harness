@@ -27,9 +27,9 @@ export function renderMarkdown(report: RunReport): string {
     '| --- | --- | --- | --- | --- | --- |',
   ]
   for (const c of report.cases) {
-    lines.push(
-      `| ${mdEscape(c.name)} | ${c.status.toUpperCase()} | ${c.steps} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${c.durationMs} |`,
-    )
+    // flaky 用例（重跑后才过）在状态列标记实际 attempt 数，提醒排查抖动来源
+    const status = c.flaky === true ? `${c.status.toUpperCase()} (flaky, ${c.attempts} attempts)` : c.status.toUpperCase()
+    lines.push(`| ${mdEscape(c.name)} | ${status} | ${c.steps} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${c.durationMs} |`)
   }
   const failed = report.cases.filter((c) => c.status !== 'pass')
   if (failed.length > 0) {

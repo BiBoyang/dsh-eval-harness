@@ -53,6 +53,8 @@ export interface EvalCase {
   require_plugins?: string[]
   /** 用例标签（元信息；eval_run 的 tags 筛选按任一命中匹配） */
   tags?: string[]
+  /** 失败重跑次数（非负整数；缺省用 eval_run 的全局 retries，最终至少跑一次） */
+  retries?: number
   assert: EvalAssert
 }
 
@@ -130,6 +132,10 @@ export interface CaseResult {
   /** tool/result 的硬错误列表（无则为空数组） */
   toolErrors: ToolError[]
   durationMs: number
+  /** 实际执行的 attempt 次数（失败重跑生效时最多 retries+1；首跑即过为 1） */
+  attempts: number
+  /** 最终 pass 但中途有失败 attempt 时为 true（flaky 标记；其余情况省略） */
+  flaky?: boolean
 }
 
 /** eval_run 产出的报告（写 <output_dir>/report.json） */

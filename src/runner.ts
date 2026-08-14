@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { checkAssertions } from './assert.js'
@@ -26,6 +26,8 @@ export interface RunOptions {
   dshBin?: string
   /** 并行跑用例的并发数，默认 1（串行）。每条用例有独立 session 根与 workspace，互不干扰 */
   concurrency?: number
+  /** 失败重跑的全局默认次数（非负整数，默认 0 不重跑）；用例 yaml 的 retries 优先于此值 */
+  retries?: number
   /** 只跑命中任一标签的用例（用例 yaml 的 tags 字段） */
   tags?: string[]
   /** 只跑这些名字（精确匹配）的用例 */
@@ -60,6 +62,11 @@ export function parseCase(text: string, file: string): EvalCase {
   if (raw.tags !== undefined) {
     if (!Array.isArray(raw.tags) || raw.tags.some((t) => typeof t !== 'string')) {
       throw new Error(`${PREFIX}: failed to parse case file '${file}': 'tags' must be a list of strings`)
+    }
+  }
+  if (raw.retries !== undefined) {
+    if (typeof raw.retries !== 'number' || !Number.isInteger(raw.retries) || raw.retries < 0) {
+      throw new Error(`${PREFIX}: failed to parse case file '${file}': 'retries' must be a non-negative integer`)
     }
   }
   if (!raw.assert || typeof raw.assert !== 'object' || Array.isArray(raw.assert)) {
@@ -115,7 +122,7 @@ export function parseCase(text: string, file: string): EvalCase {
     }
     assert.no_tool_errors = a.no_tool_errors
   }
-  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, assert }
+  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, assert }
 }
 
 /**
@@ -336,6 +343,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   const profile = options.profile ?? 'headless'
   const timeoutMs = options.timeoutMs ?? 600_000
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1))
+  const retriesDefault = Math.max(0, Math.floor(options.retries ?? 0))
   const casesDir = resolve(options.casesDir)
   const outputDir = resolve(options.outputDir)
   const sessionBase = resolve(options.sessionRoot ?? join(outputDir, '.sessions'))
@@ -366,46 +374,73 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     await mkdir(sessionRoot, { recursive: true })
     await writeFile(overlayPath, buildOverlayYaml(sessionRoot))
 
-    const startedAt = Date.now()
-    const base: Omit<CaseResult, 'status' | 'durationMs'> = {
-      name: evalCase.name,
-      failures: [],
-      toolsCalled: [],
-      toolCalls: [],
-      toolResults: [],
-      finalText: '',
-      steps: 0,
-      tokens: emptyTokenUsage(),
-      toolErrors: [],
-    }
-    try {
-      const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
-      if (proc.timedOut) {
-        const partial = await tryCollectTrace(sessionRoot, startedAt)
+    /** 单次 attempt：失败/错误（含超时）返回非 pass 状态，由外层决定是否重跑 */
+    const runAttempt = async (): Promise<Omit<CaseResult, 'attempts' | 'flaky'>> => {
+      // 每次 attempt 前清空重建 workspace：上一次 attempt 的 fs 副作用（agent 落的
+      // 文件、缓存）会让重跑假通过；session 根复用，findSessionFile 按 attempt
+      // 起点过滤（sinceMs），只采集本次 attempt 的 trace
+      await rm(workspace, { recursive: true, force: true })
+      await mkdir(workspace, { recursive: true })
+      const startedAt = Date.now()
+      const base: Omit<CaseResult, 'status' | 'durationMs' | 'attempts' | 'flaky'> = {
+        name: evalCase.name,
+        failures: [],
+        toolsCalled: [],
+        toolCalls: [],
+        toolResults: [],
+        finalText: '',
+        steps: 0,
+        tokens: emptyTokenUsage(),
+        toolErrors: [],
+      }
+      try {
+        const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
+        if (proc.timedOut) {
+          const partial = await tryCollectTrace(sessionRoot, startedAt)
+          return {
+            ...base,
+            ...(partial ? traceFields(partial) : {}),
+            status: 'error',
+            error: `dsh subprocess timed out after ${timeoutMs}ms`,
+            durationMs: Date.now() - startedAt,
+          }
+        }
+        const sessionFile = await findSessionFile(sessionRoot, startedAt)
+        if (!sessionFile) {
+          const detail = proc.code !== 0 ? ` (dsh exited ${proc.code}${proc.stderrTail ? `: ${proc.stderrTail}` : ''})` : ''
+          return { ...base, status: 'error', error: `no session log (session.jsonl / session.jsonl.zstd) found under '${sessionRoot}'${detail}`, durationMs: Date.now() - startedAt }
+        }
+        const trace = await collectFromFile(sessionFile)
+        const failures = checkAssertions(evalCase.assert, trace)
         return {
           ...base,
-          ...(partial ? traceFields(partial) : {}),
-          status: 'error',
-          error: `dsh subprocess timed out after ${timeoutMs}ms`,
+          ...traceFields(trace),
+          status: failures.length === 0 ? 'pass' : 'fail',
+          failures,
           durationMs: Date.now() - startedAt,
         }
+      } catch (err) {
+        return { ...base, status: 'error', error: (err as Error).message, durationMs: Date.now() - startedAt }
       }
-      const sessionFile = await findSessionFile(sessionRoot, startedAt)
-      if (!sessionFile) {
-        const detail = proc.code !== 0 ? ` (dsh exited ${proc.code}${proc.stderrTail ? `: ${proc.stderrTail}` : ''})` : ''
-        return { ...base, status: 'error', error: `no session log (session.jsonl / session.jsonl.zstd) found under '${sessionRoot}'${detail}`, durationMs: Date.now() - startedAt }
-      }
-      const trace = await collectFromFile(sessionFile)
-      const failures = checkAssertions(evalCase.assert, trace)
-      return {
-        ...base,
-        ...traceFields(trace),
-        status: failures.length === 0 ? 'pass' : 'fail',
-        failures,
-        durationMs: Date.now() - startedAt,
-      }
-    } catch (err) {
-      return { ...base, status: 'error', error: (err as Error).message, durationMs: Date.now() - startedAt }
+    }
+
+    // flaky 治理：失败才重跑（不是固定跑 k 次）——任一 attempt 断言全过即停，
+    // 最终状态取最后一次 attempt；trace 字段随 result 天然只保留最后一次
+    const retries = evalCase.retries ?? retriesDefault
+    const totalStartedAt = Date.now()
+    let attempts = 1
+    let result = await runAttempt()
+    while (result.status !== 'pass' && attempts <= retries) {
+      attempts++
+      result = await runAttempt()
+    }
+    return {
+      ...result,
+      attempts,
+      flaky: result.status === 'pass' && attempts > 1 ? true : undefined,
+      // 耗时按全 attempt 计：flaky 用例重跑的成本（token / 时长）应对读者可见，
+      // 而不是只看最后一次 attempt
+      durationMs: Date.now() - totalStartedAt,
     }
   }
 
