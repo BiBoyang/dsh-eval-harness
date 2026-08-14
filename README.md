@@ -1,6 +1,6 @@
-<h1 align="center">dsh-eval-harness</h1>
+# dsh-eval-harness
 
-<p align="center">DSH 插件/skill 作者的回归评测门禁：写 yaml 用例 → headless 驱动真实 agent 跑 → 解析 session trace 断言 → 对比 baseline 出 PASS/WARN/FAIL 报告与 CI 退出码。</p>
+DSH 插件/skill 作者的回归评测门禁：写 yaml 用例 → headless 驱动真实 agent 跑 → 解析 session trace 断言 → 对比 baseline 出 PASS/WARN/FAIL 报告与 CI 退出码。
 
 ## 简介
 
