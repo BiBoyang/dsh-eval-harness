@@ -120,7 +120,8 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 每条新报告用例还会写入 `attemptResults`：按执行顺序保存每次重试的状态、断言失败、
 进程诊断、trace 摘要、token 与耗时；`CaseResult` 顶层字段继续表示最后一次 attempt，
 兼容现有 gate 与报告消费者。旧报告没有真实 attempt 历史时，loader 会合成一条单次记录，
-不会伪造旧报告不存在的重试信息。
+不会伪造旧报告不存在的重试信息。报告头部另记 `dshVersion`（`dsh --version` 探针首行），
+排障时可直接区分「dsh 变了」还是「模型变了」。
 
 ### eval_gate
 
@@ -141,6 +142,7 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | 有用例 PASS → FAIL/error，或新增用例即 FAIL/error | `FAIL` | 1 |
 | 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除） | `WARN` | 0（strict 为 2） |
 | 状态不变但 token total 涨幅超阈值（默认 +50%，`max_token_increase_pct` 可调，0 关闭） | `WARN` | 0（strict 为 2） |
+| `skippedLines` 较 baseline 增长（trace 解析漏帧增多，断言可能基于残缺数据） | `WARN` | 0（strict 为 2） |
 | 全部与 baseline 一致 | `PASS` | 0 |
 | 无 baseline | `N/A` | 2 |
 
@@ -156,6 +158,7 @@ IMPROVEMENTS=0
 ADDED=0
 REMOVED=0
 TOKEN_REGRESSIONS=0
+SKIPPED_LINE_INCREASES=0
 REASON regression: echo-hello pass -> fail
 REGRESSION echo-hello: pass -> fail
 ```
@@ -169,7 +172,9 @@ REGRESSION echo-hello: pass -> fail
 LLM 或 API key。真实 agent 回归 workflow 见 [.github/workflows/eval.yml](.github/workflows/eval.yml)：
 `pnpm build && pnpm test` 后直调 `lib/runner.js` 的 `runEval` 跑 `cases/real/` 全量（真实 LLM，需仓库 secret
 `DEEPSEEK_API_KEY`），再用 `lib/gate.js` 的 `computeGate` 对比 `baseline/report.json`，
-按 `EXIT_CODE` 拦截；report 作为 artifact 留存。用例或 harness 代码变更会触发重跑，
+按 `EXIT_CODE` 拦截；report 作为 artifact 留存。评测步开 `concurrency: 3` 与
+`retries: 1`（偶发网络/模型抖动重跑一次，flaky 标记留在报告里供排查）。
+用例或 harness 代码变更会触发重跑，
 另有每日定时跑（近 24h 无新 commit 则跳过）。
 
 baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/update-baseline.yml)：

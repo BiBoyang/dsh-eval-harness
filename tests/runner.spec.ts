@@ -70,6 +70,20 @@ describe('resolveDshCommand', () => {
 
     expect(() => resolveDshCommand(fakeBin)).toThrow(/dsh version probe exited 7.*probe-broken/)
   })
+
+  it('captures the dsh version from the probe stdout', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-probe-'))
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      ['#!/bin/sh', 'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi', 'exit 0', ''].join('\n'),
+      { mode: 0o755 },
+    )
+
+    const cmd = resolveDshCommand(fakeBin)
+    expect(cmd.bin).toBe(fakeBin)
+    expect(cmd.version).toBe('0.0.0-fake')
+  })
 })
 
 describe('buildDshArgs', () => {
@@ -255,6 +269,7 @@ describe('runEval concurrency + filtering', () => {
     const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, concurrency: 3, timeoutMs: 10_000 })
 
     expect(report.schemaVersion).toBe(1)
+    expect(report.dshVersion).toBe('0.0.0-fake')
     expect(report.cases.map((c) => c.name)).toEqual(['case-a', 'case-b', 'case-c'])
     expect(report.cases.every((c) => c.status === 'pass')).toBe(true)
     expect(Date.parse(report.finishedAt)).toBeGreaterThanOrEqual(Date.parse(report.startedAt))

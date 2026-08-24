@@ -193,6 +193,8 @@ export interface RunReport {
   /** 整次 runEval 墙钟耗时（含 dsh 探针、用例加载、执行与报告生成前处理） */
   durationMs: number
   profile: string
+  /** dsh --version 探针 stdout（首行）；schema 0/旧报告缺省 */
+  dshVersion?: string
   cases: CaseResult[]
   summary: {
     total: number
@@ -230,6 +232,15 @@ export interface GateReport {
   removed: string[]
   /** 状态不变但 token total 涨幅超阈值的用例（before/after 为 total 值） */
   tokenRegressions: GateTokenDiff[]
+  /** 状态不变但 skippedLines 增长的用例（trace 解析漏帧增多，断言可能基于残缺数据） */
+  skippedLineIncreases: GateSkippedLinesDiff[]
+}
+
+/** skippedLines 增长明细（before/after 为跳过的不良 JSONL 行数） */
+export interface GateSkippedLinesDiff {
+  name: string
+  before: number
+  after: number
 }
 
 /** token 回归明细（total = input+output+reasoning，与 max_tokens 同口径） */

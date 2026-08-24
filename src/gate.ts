@@ -39,6 +39,7 @@ export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
  * - 新增用例即 FAIL/error → FAIL
  * - 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除）→ WARN
  * - 状态不变但 token total 涨幅超阈值（默认 +50%）→ WARN
+ * - skippedLines 较 baseline 增长（trace 解析漏帧增多）→ WARN
  * - 完全一致 → PASS
  * - before 为 null（无 baseline）→ N/A
  */
@@ -53,6 +54,7 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     added: [],
     removed: [],
     tokenRegressions: [],
+    skippedLineIncreases: [],
   }
   if (!before) {
     return { ...base, verdict: 'N/A', exitCode: gateExitCode('N/A', strict), reasons: ['no baseline report; gate not applicable'] }
@@ -90,6 +92,11 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
       }
       base.tokenRegressions.push(tokenDiff)
     }
+    // skippedLines 增长：trace 解析漏帧增多，断言可能基于残缺数据通过——与状态/token
+    // 无关，只要较 baseline 增多就提示排查 collector 或 dsh 落盘格式变化
+    if (beforeCase !== undefined && afterCase.skippedLines > beforeCase.skippedLines) {
+      base.skippedLineIncreases.push({ name, before: beforeCase.skippedLines, after: afterCase.skippedLines })
+    }
   }
   for (const name of beforeMap.keys()) {
     if (!afterMap.has(name)) base.removed.push(name)
@@ -100,7 +107,7 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     verdict = 'FAIL'
     for (const d of base.regressions) base.reasons.push(`regression: ${d.name} pass -> ${d.after}`)
     for (const d of base.newFailures) base.reasons.push(`new failing case: ${d.name}`)
-  } else if (base.improvements.length > 0 || base.added.length > 0 || base.removed.length > 0 || base.tokenRegressions.length > 0) {
+  } else if (base.improvements.length > 0 || base.added.length > 0 || base.removed.length > 0 || base.tokenRegressions.length > 0 || base.skippedLineIncreases.length > 0) {
     verdict = 'WARN'
     for (const d of base.improvements) base.reasons.push(`improvement: ${d.name} fail -> pass`)
     for (const n of base.added) base.reasons.push(`added passing case: ${n}`)
@@ -111,6 +118,9 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   }
   for (const d of base.tokenRegressions) {
     base.reasons.push(`token regression: ${d.name} total ${d.before} -> ${d.after} (+${d.increasePct}%)`)
+  }
+  for (const d of base.skippedLineIncreases) {
+    base.reasons.push(`skipped lines increase: ${d.name} ${d.before} -> ${d.after}`)
   }
 
   return { ...base, verdict, exitCode: gateExitCode(verdict, strict) }
@@ -128,12 +138,14 @@ export function renderGateText(report: GateReport): string {
     `ADDED=${report.added.length}`,
     `REMOVED=${report.removed.length}`,
     `TOKEN_REGRESSIONS=${report.tokenRegressions.length}`,
+    `SKIPPED_LINE_INCREASES=${report.skippedLineIncreases.length}`,
   ]
   for (const r of report.reasons) lines.push(`REASON ${r}`)
   for (const d of report.regressions) lines.push(`REGRESSION ${d.name}: ${d.before} -> ${d.after}`)
   for (const d of report.newFailures) lines.push(`NEW_FAILURE ${d.name}: ${d.after}`)
   for (const d of report.improvements) lines.push(`IMPROVEMENT ${d.name}: ${d.before} -> ${d.after}`)
   for (const d of report.tokenRegressions) lines.push(`TOKEN_REGRESSION ${d.name}: total ${d.before} -> ${d.after} (+${d.increasePct}%)`)
+  for (const d of report.skippedLineIncreases) lines.push(`SKIPPED_LINE_INCREASE ${d.name}: ${d.before} -> ${d.after}`)
   return lines.join('\n')
 }
 
@@ -355,6 +367,7 @@ function normalizeReport(value: unknown, path: string): RunReport {
   const startedAt = requiredString(value.startedAt, 'startedAt', path)
   if (!validDate(startedAt)) failReport(path, 'startedAt must be a valid date string')
   const profile = requiredString(value.profile, 'profile', path)
+  if (value.dshVersion !== undefined && typeof value.dshVersion !== 'string') failReport(path, 'dshVersion must be a string')
   if (!Array.isArray(value.cases)) failReport(path, 'cases must be an array')
 
   const cases = value.cases.map((item, index) => normalizeCase(item, index, schemaVersion, path))
@@ -380,7 +393,18 @@ function normalizeReport(value: unknown, path: string): RunReport {
     failReport(path, `summary does not match cases (expected ${JSON.stringify(actual)}, got ${JSON.stringify(summary)})`)
   }
 
-  return { schemaVersion, tool, version, startedAt, finishedAt, durationMs, profile, cases, summary }
+  return {
+    schemaVersion,
+    tool,
+    version,
+    startedAt,
+    finishedAt,
+    durationMs,
+    profile,
+    ...(value.dshVersion === undefined ? {} : { dshVersion: value.dshVersion as string }),
+    cases,
+    summary,
+  }
 }
 
 /** 供测试/工具复用：从 CaseResult 数组构造最小 RunReport */

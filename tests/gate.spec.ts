@@ -190,6 +190,44 @@ describe('computeGate token regressions', () => {
   })
 })
 
+describe('computeGate skippedLines increases', () => {
+  const withSkipped = (name: string, status: CaseStatus, skipped: number): CaseResult => ({
+    ...caseResult(name, status),
+    skippedLines: skipped,
+  })
+
+  it('WARN when skippedLines grows with unchanged status', () => {
+    const g = computeGate(report([withSkipped('a', 'pass', 0)]), report([withSkipped('a', 'pass', 3)]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.exitCode).toBe(0)
+    expect(g.skippedLineIncreases).toEqual([{ name: 'a', before: 0, after: 3 }])
+    expect(g.reasons.some((r) => r.includes('skipped lines increase: a 0 -> 3'))).toBe(true)
+  })
+
+  it('PASS when skippedLines is unchanged or decreased', () => {
+    expect(computeGate(report([withSkipped('a', 'pass', 2)]), report([withSkipped('a', 'pass', 2)]), false).verdict).toBe('PASS')
+    expect(computeGate(report([withSkipped('a', 'pass', 2)]), report([withSkipped('a', 'pass', 1)]), false).verdict).toBe('PASS')
+  })
+
+  it('records increases even under FAIL verdict; new cases are not compared', () => {
+    const g = computeGate(
+      report([withSkipped('a', 'pass', 0)]),
+      report([withSkipped('a', 'fail', 2), withSkipped('b', 'pass', 5)]),
+      false,
+    )
+    expect(g.verdict).toBe('FAIL')
+    expect(g.skippedLineIncreases).toEqual([{ name: 'a', before: 0, after: 2 }])
+  })
+
+  it('text output has SKIPPED_LINE_INCREASES count and detail lines', () => {
+    const g = computeGate(report([withSkipped('a', 'pass', 0)]), report([withSkipped('a', 'pass', 3)]), false)
+    const text = renderGateText(g)
+    expect(text).toContain('OVERALL=WARN')
+    expect(text).toContain('SKIPPED_LINE_INCREASES=1')
+    expect(text).toContain('SKIPPED_LINE_INCREASE a: 0 -> 3')
+  })
+})
+
 describe('gateExitCode', () => {
   it('maps verdicts per protocol', () => {
     expect(gateExitCode('PASS', false)).toBe(0)
@@ -233,6 +271,14 @@ describe('loadReport schema validation', () => {
     expect(loaded?.schemaVersion).toBe(1)
     expect(loaded?.cases[0]?.events).toBe(0)
     expect(loaded?.cases[0]?.attemptResults).toHaveLength(1)
+  })
+
+  it('preserves dshVersion and rejects a non-string one', async () => {
+    const withVersion = { ...report([caseResult('a', 'pass')]), dshVersion: '0.1.0-rc.6' }
+    expect((await loadReport(await writeReport(withVersion)))?.dshVersion).toBe('0.1.0-rc.6')
+
+    const badVersion = { ...report([caseResult('a', 'pass')]), dshVersion: 123 }
+    await expect(loadReport(await writeReport(badVersion))).rejects.toThrow(/dshVersion must be a string/)
   })
 
   it('normalizes legacy reports without schemaVersion', async () => {

@@ -2,6 +2,22 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- 报告记录 dsh 版本：`RunReport` 新增 `dshVersion`（`dsh --version` 探针 stdout 首行，
+  写入 report.json 与 report.md 头部）；排障时可直接区分「dsh 变了」还是「模型变了」。
+  legacy / 旧 schema 1 报告缺省该字段，loader 兼容读取。
+- gate 新增 skippedLines 回归告警：用例 `skippedLines` 较 baseline 增长（trace 解析
+  漏帧增多，断言可能基于残缺数据通过）记 WARN；文本输出新增 `SKIPPED_LINE_INCREASES` /
+  `SKIPPED_LINE_INCREASE` 行，JSON 新增 `skippedLineIncreases` 字段。
+
+### Changed
+
+- CI 评测步开 `retries: 1`（eval.yml 与 update-baseline.yml 口径一致）：偶发网络/模型
+  抖动重跑一次，flaky 标记与 attempt 历史仍留在报告里供排查。
+
 ## [0.3.1] - 2026-08-24
 
 ### Fixed

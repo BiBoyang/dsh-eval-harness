@@ -59,7 +59,7 @@ jobs:
       - name: Install dsh
         run: npm install -g @deepseek-ai/dsh@0.1.0-rc.6
 
-      # 参数与 eval.yml 的评测步完全一致（含 retries 缺省 0），保证产出报告口径可比
+      # 参数与 eval.yml 的评测步完全一致（含 retries: 1），保证产出报告口径可比
       - name: Run eval cases (real LLM)
         run: |
           node --input-type=module -e "
@@ -69,6 +69,7 @@ jobs:
             outputDir: '.eval/out',
             dshBin: 'dsh',
             concurrency: 3,
+            retries: 1,
           })
           console.log(JSON.stringify(report.summary))
           "

@@ -94,6 +94,8 @@ jobs:
             outputDir: '.eval/out',
             dshBin: 'dsh',
             concurrency: 3,
+            // 偶发网络/模型抖动重跑一次；flaky 标记会留在报告里供排查
+            retries: 1,
           })
           console.log(JSON.stringify(report.summary))
           "

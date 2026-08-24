@@ -23,6 +23,7 @@ export function renderMarkdown(report: RunReport): string {
     `- 结束时间：${report.finishedAt}`,
     `- 总耗时：${report.durationMs} ms`,
     `- profile：${report.profile}`,
+    ...(report.dshVersion === undefined ? [] : [`- dsh 版本：${mdEscape(report.dshVersion)}`]),
     `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}`,
     '',
     '| 用例 | 结果 | steps | events/skipped | tokens total (in+out+reas; cacheR+cacheW) | turn_end | 耗时 ms |',

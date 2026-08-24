@@ -186,6 +186,8 @@ export async function loadCases(casesDir: string): Promise<{ file: string; evalC
 export interface DshCommand {
   bin: string
   prefixArgs: string[]
+  /** --version 探针 stdout 首行；仅 resolveDshCommand 成功时带，splitDshBin 不含 */
+  version?: string
 }
 
 /**
@@ -221,7 +223,9 @@ export function resolveDshCommand(dshBin?: string): DshCommand {
       `${PREFIX}: dsh version probe exited ${probe.status ?? '<unknown>'}${stderrTail ? `: ${stderrTail}` : ''}`,
     )
   }
-  return cmd
+  // 探针 stdout 首行即 dsh 版本（写进 report，供排障时定位「dsh 变了还是模型变了」）
+  const version = typeof probe.stdout === 'string' ? probe.stdout.trim().split('\n')[0]?.trim() : ''
+  return version ? { ...cmd, version } : cmd
 }
 
 function slugify(name: string): string {
@@ -560,6 +564,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     finishedAt: new Date(runFinishedAtMs).toISOString(),
     durationMs: runFinishedAtMs - runStartedAtMs,
     profile,
+    ...(dsh.version === undefined ? {} : { dshVersion: dsh.version }),
     cases: results as CaseResult[],
     summary: summarize(results as CaseResult[]),
   }
