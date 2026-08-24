@@ -38,6 +38,8 @@
   校准 → 进门禁 → 重校时机）；eval skill 新增 judge 校准与 trials/retries 语义
   辨析；`cases/example.case.yml` 附 output_judge 注释示例，新增
   `examples/judge-labels.example.jsonl` 标注集格式示例（随包发布）。
+- `package.json` 声明 `engines.node >= 22.15.0`：采集层依赖 `node:zlib` 内置的
+  zstd 解压（22.15/23.8 起可用），旧 LTS 上会直接不可用。
 - CI 评测的 dsh 版本钉 0.1.0-rc.6 → **0.1.1-rc.2**（eval.yml / update-baseline.yml，
   含 npm 缓存 key）；#2626 修复在该版本合入，是 `12-read-image-oversized` 的前置条件。
 - CI 评测步开 `retries: 1`（eval.yml 与 update-baseline.yml 口径一致）：偶发网络/模型
