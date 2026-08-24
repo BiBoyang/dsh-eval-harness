@@ -6,6 +6,21 @@
 
 ### Added
 
+- 可靠性测量（trials / pass@k / pass^k）：用例 yaml 新增 `trials`（正整数，缺省用
+  `eval_run` 的全局 `trials`，默认 1）。`trials > 1` 时用例跑满 n 次独立 attempt
+  （每次前清空 workspace、忽略 retries——测量必须是无重试干预的原始单次成功率），
+  `CaseResult` 新增 `reliability`（successRate / passAtK / passPowK，pass@k 用无偏
+  组合估计而非小 n 下有偏的 naive 公式），report.md 用例表新增可靠性列。用例状态
+  语义与 retries 对齐（任一通过即 pass），gate 判定不变——可靠性只测量展示。
+  `eval_run` 新增 `pass_k`（默认 2），k 不得超过被测量用例的有效 trials。
+- judge 校准：新增 `eval_judge_validate` 工具——在人工标注 JSONL（每行
+  `{"rubric", "output", "expect"}`）上跑 judge，报混淆矩阵并**分开**给 TPR
+  （真失败抓到率）与 TNR（真通过不冤枉率），双指标达标（默认 0.9/0.9）才算
+  calibrated；agreement 不作为依据（高 pass 占比下橡皮图章 judge 也能拿高分），
+  缺样本的维度记 null 且整体不达标。判定与标注不一致的条目进 `mismatches`。
+- 新用例 `12-read-image-oversized`：钉死 deepseek-harness#2626 的修复契约——边长超
+  2000px 的图片须在准入时降采样并在结果文本声明（`downscaled from …`）。红绿已实测：
+  dsh 0.1.1-rc.2 PASS（降采样并标注），0.1.0-rc.6 FAIL（原尺寸入历史、无标注）。
 - 报告记录 dsh 版本：`RunReport` 新增 `dshVersion`（`dsh --version` 探针 stdout 首行，
   写入 report.json 与 report.md 头部）；排障时可直接区分「dsh 变了」还是「模型变了」。
   legacy / 旧 schema 1 报告缺省该字段，loader 兼容读取。
@@ -15,6 +30,16 @@
 
 ### Changed
 
+- judge 输出格式翻转为「先简短分析、末行 PASS/FAIL」（CoT 在前）：先下结论再补理由
+  的格式会让理由沦为事后粉饰。`parseJudgeReply` 取最后一个非空行作判定。
+  **行为变化**：同一回答的判定可能与旧格式不同，上 judge 前先用 `eval_judge_validate`
+  校准。
+- 教学渠道同步：README 新增「judge 使用与校准」工作流（写 rubric → 攒标注集 →
+  校准 → 进门禁 → 重校时机）；eval skill 新增 judge 校准与 trials/retries 语义
+  辨析；`cases/example.case.yml` 附 output_judge 注释示例，新增
+  `examples/judge-labels.example.jsonl` 标注集格式示例（随包发布）。
+- CI 评测的 dsh 版本钉 0.1.0-rc.6 → **0.1.1-rc.2**（eval.yml / update-baseline.yml，
+  含 npm 缓存 key）；#2626 修复在该版本合入，是 `12-read-image-oversized` 的前置条件。
 - CI 评测步开 `retries: 1`（eval.yml 与 update-baseline.yml 口径一致）：偶发网络/模型
   抖动重跑一次，flaky 标记与 attempt 历史仍留在报告里供排查。
 

@@ -281,6 +281,19 @@ describe('loadReport schema validation', () => {
     await expect(loadReport(await writeReport(badVersion))).rejects.toThrow(/dshVersion must be a string/)
   })
 
+  it('preserves a valid reliability block and rejects malformed ones', async () => {
+    const reliability = { trials: 3, passes: 2, successRate: 2 / 3, passAtK: 1, passPowK: 4 / 9, k: 2 }
+    const base = caseResult('a', 'pass')
+    const good = { ...report([base]), cases: [{ ...base, reliability }] }
+    expect((await loadReport(await writeReport(good)))?.cases[0]?.reliability?.trials).toBe(3)
+
+    const badRate = { ...report([base]), cases: [{ ...base, reliability: { ...reliability, successRate: 1.5 } }] }
+    await expect(loadReport(await writeReport(badRate))).rejects.toThrow(/reliability\.successRate must be a number in \[0, 1\]/)
+
+    const passesOverflow = { ...report([base]), cases: [{ ...base, reliability: { ...reliability, passes: 4 } }] }
+    await expect(loadReport(await writeReport(passesOverflow))).rejects.toThrow(/reliability\.passes must not exceed trials/)
+  })
+
   it('normalizes legacy reports without schemaVersion', async () => {
     const legacy = {
       tool: 'dsh-eval-harness',

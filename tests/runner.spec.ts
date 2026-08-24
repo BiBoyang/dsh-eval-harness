@@ -179,6 +179,22 @@ describe('parseCase retries', () => {
   })
 })
 
+describe('parseCase trials', () => {
+  it('parses trials as a positive integer and omits it when not set', () => {
+    const c = parseCase('name: a\nprompt: "p"\ntrials: 3\nassert:\n  turn_end: completed\n', 'a.yml')
+    expect(c.trials).toBe(3)
+    expect(parseCase('name: a\nprompt: "p"\nassert:\n  turn_end: completed\n', 'a.yml').trials).toBeUndefined()
+  })
+
+  it('rejects zero / negative / non-integer / non-number trials', () => {
+    for (const value of ['0', '-1', '1.5', '"3"']) {
+      expect(() => parseCase(`name: a\nprompt: "p"\ntrials: ${value}\nassert:\n  turn_end: completed\n`, 'a.yml')).toThrow(
+        /'trials' must be a positive integer/,
+      )
+    }
+  })
+})
+
 describe('parseCase output_judge', () => {
   it('parses output_judge with a rubric', () => {
     const c = parseCase('name: a\nprompt: "p"\nassert:\n  output_judge:\n    rubric: "解释原因而非只给结论"\n', 'a.yml')
@@ -597,6 +613,102 @@ describe('runEval retries (flaky 治理)', () => {
     expect(c.attempts).toBe(2)
     expect(c.flaky).toBe(true)
     expect(c.attemptResults.map((a) => a.status)).toEqual(['error', 'pass'])
+  }, 15_000)
+})
+
+describe('runEval trials (可靠性测量)', () => {
+  /** 与 retries 相同的跨 attempt 计数 fake：第 passFrom 个 attempt 起落过测 trace */
+  const header = '{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":0}'
+  const bashCall = '{"type":"tool/call","seq":1,"time":1,"data":{"turn":1,"step":1,"callId":"c1","name":"bash","arguments":"{}"}}'
+
+  const writeTrialFakeDsh = async (root: string, passFrom: number): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh')
+    const script = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      'state="$root/.attempts"',
+      'n=0',
+      '[ -f "$state" ] && n=$(cat "$state")',
+      'n=$((n + 1))',
+      'echo "$n" > "$state"',
+      `if [ "$n" -ge ${passFrom} ]; then`,
+      `  printf '%s\\n' '${header}' '${bashCall}' > "$dir/session.jsonl"`,
+      'else',
+      `  printf '%s\\n' '${header}' > "$dir/session.jsonl"`,
+      'fi',
+      '',
+    ]
+    await writeFile(fakeBin, script.join('\n'), { mode: 0o755 })
+    return fakeBin
+  }
+
+  it('runs all trials regardless of pass/fail and reports reliability', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-trials-'))
+    const fakeBin = await writeTrialFakeDsh(root, 2)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: measured\nprompt: "p"\ntrials: 3\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    // 状态语义与 retries 对齐：任一 trial 通过即 pass；顶层字段是最后一次 attempt 的投影
+    expect(c.status).toBe('pass')
+    expect(c.attempts).toBe(3)
+    expect(c.attemptResults.map((a) => a.status)).toEqual(['fail', 'pass', 'pass'])
+    // 部分通过即标 flaky（与「重跑后才过」同义：结果不是一次命中的）
+    expect(c.flaky).toBe(true)
+    // n=3 c=2 k=2：pass@2 = 1 - C(1,2)/C(3,2) = 1；pass^2 = (2/3)^2
+    expect(c.reliability).toBeDefined()
+    expect(c.reliability?.trials).toBe(3)
+    expect(c.reliability?.passes).toBe(2)
+    expect(c.reliability?.successRate).toBeCloseTo(2 / 3)
+    expect(c.reliability?.passAtK).toBe(1)
+    expect(c.reliability?.passPowK).toBeCloseTo(4 / 9)
+  }, 15_000)
+
+  it('keeps single-run cases free of the reliability block', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-trials1-'))
+    const fakeBin = await writeTrialFakeDsh(root, 1)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: single\nprompt: "p"\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+    expect(report.cases[0]?.reliability).toBeUndefined()
+  }, 15_000)
+
+  it('rejects pass_k greater than a measured case\'s trials', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-passk-'))
+    const fakeBin = await writeTrialFakeDsh(root, 1)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: measured\nprompt: "p"\ntrials: 2\nassert:\n  tools_called: [bash]\n')
+
+    await expect(
+      runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, passK: 3, timeoutMs: 10_000 }),
+    ).rejects.toThrow(/pass_k \(3\) must not exceed trials \(2\)/)
+  }, 15_000)
+
+  it('all-fail trials keep the last attempt status and zero passes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-trials0-'))
+    const fakeBin = await writeTrialFakeDsh(root, 99)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: hopeless\nprompt: "p"\ntrials: 3\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.status).toBe('fail')
+    expect(c.flaky).toBeUndefined()
+    expect(c.reliability?.passes).toBe(0)
+    expect(c.reliability?.successRate).toBe(0)
+    expect(c.reliability?.passAtK).toBe(0)
   }, 15_000)
 })
 

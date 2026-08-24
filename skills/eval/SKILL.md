@@ -19,6 +19,9 @@ name: 用例名（唯一，gate 按名字对比）
 prompt: "发给 agent 的内容"
 require_plugins: [some-plugin]   # 可选：声明依赖的插件（仅元信息，供阅读/环境核对）
 tags: [fast]                     # 可选：标签，eval_run 的 tags 筛选按任一命中匹配
+retries: 1                       # 可选：失败重跑次数（缺省用 eval_run 全局值）
+trials: 3                        # 可选：可靠性测量的独立 trial 次数（>1 时忽略 retries，
+                                 # 报告给 successRate / pass@k / pass^k）
 assert:
   turn_end: completed            # turn/end 事件的 reason.kind
   tools_called: [tool_a, tool_b] # tool/call 名称序列须按序包含（保序子序列，不要求连续）
@@ -36,6 +39,8 @@ assert:
   tool_result_contains:          # 可选，指定工具至少一次结果的文本包含子串
     - name: tool_a
       contains: total
+  output_judge:                  # 可选，LLM 语义断言（结构断言全过才调；先校准再用，见编写要点）
+    rubric: "必须解释原因，不许只给结论"
 ```
 
 ## 编写要点
@@ -66,6 +71,17 @@ assert:
   `output_matches` 的先用结构断言（可复现、零成本）；judge 兜「解释原因而非
   只给结论」这类语义判分。rubric 要可判定（写出「必须/不许」的具体标准），
   避免主观词（如「回答要好」）——judge 按二元 PASS/FAIL 评，模糊标准只会放大抖动。
+- **judge 先校准再信任**：judge 本身是个会犯错的 LLM，它的漏判会直接变成门禁的
+  假绿。给任何用例挂上 `output_judge` 之前，先用 `eval_judge_validate` 在人工标注集
+  上验证：标注集是 JSONL，每行 `{"rubric": "...", "output": "...", "expect": "pass"|"fail"}`，
+  样本从已有报告的真实 finalText 里抽（通过的、失败的都要）。看 TPR（真失败抓到率）
+  和 TNR（真通过不冤枉率）两个数，默认都要 ≥0.9；agreement 不可信（样本里 pass 占
+  多数时橡皮图章 judge 也能拿高 agreement）。judge 模型更换、judge prompt 变化、
+  数据分布变化后都要重新校准。
+- **想量可靠性用 `trials`，想遮抖动用 `retries`**：`retries` 失败即重跑、过了就停
+  （门禁不被偶发抖动打红）；`trials: n` 跑满 n 次独立尝试（每次清空 workspace、不
+  重试），报告给出单次成功率与 pass@k/pass^k。两者语义互斥：trials > 1 时 retries
+  被忽略。
 - **用例名稳定**：gate 按 `name` 对比 baseline，改名 = 删除 + 新增（WARN）。
 
 ## 跑评测与门禁

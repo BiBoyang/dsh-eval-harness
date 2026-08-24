@@ -1,0 +1,6 @@
+{"rubric": "必须解释原因，不许只给结论", "output": "答案是 42，因为它满足所有约束条件。", "expect": "pass"}
+{"rubric": "必须解释原因，不许只给结论", "output": "答案是 42。", "expect": "fail"}
+{"rubric": "必须真实调用 read_image 读取图片，不许用其他工具兜底", "output": "我用 read_image 读了图，尺寸是 1x1。", "expect": "pass"}
+{"rubric": "必须真实调用 read_image 读取图片，不许用其他工具兜底", "output": "我用 file 命令看了下，是 1x1 的 PNG。", "expect": "fail"}
+{"rubric": "回复必须包含具体的数字结果", "output": "统计完成，一共 128 条记录。", "expect": "pass"}
+{"rubric": "回复必须包含具体的数字结果", "output": "统计完成，结果符合预期。", "expect": "fail"}

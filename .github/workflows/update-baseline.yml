@@ -54,10 +54,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: npm-dsh-0.1.0-rc.6
+          key: npm-dsh-0.1.1-rc.2
 
       - name: Install dsh
-        run: npm install -g @deepseek-ai/dsh@0.1.0-rc.6
+        run: npm install -g @deepseek-ai/dsh@0.1.1-rc.2
 
       # 参数与 eval.yml 的评测步完全一致（含 retries: 1），保证产出报告口径可比
       - name: Run eval cases (real LLM)

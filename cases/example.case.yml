@@ -8,3 +8,8 @@ assert:
   no_tool_errors: true           # 工具返回硬错误（tool/result 带 error/isError）即 fail，防"兜底假通过"
   tools_exact: []                # 恰好零工具调用（长度+顺序+内容全等；需要精确锁调用序列时用）
   output_not_contains: ["抱歉"]   # 最终文本不得出现"抱歉"（兜底/拒绝话术黑名单）
+
+# output_judge 示例（本用例用不上语义判定，故仅注释示范；真实使用前先用
+# eval_judge_validate 在人工标注集上校准，标注集格式见 examples/judge-labels.example.jsonl）：
+#   output_judge:
+#     rubric: "必须以原样文本回复，不许加解释或客套话"

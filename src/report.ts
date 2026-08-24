@@ -26,14 +26,19 @@ export function renderMarkdown(report: RunReport): string {
     ...(report.dshVersion === undefined ? [] : [`- dsh 版本：${mdEscape(report.dshVersion)}`]),
     `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}`,
     '',
-    '| 用例 | 结果 | steps | events/skipped | tokens total (in+out+reas; cacheR+cacheW) | turn_end | 耗时 ms |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| 用例 | 结果 | steps | events/skipped | tokens total (in+out+reas; cacheR+cacheW) | turn_end | 可靠性 (trials) | 耗时 ms |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
   ]
   for (const c of report.cases) {
     // flaky 用例（重跑后才过）在状态列标记实际 attempt 数，提醒排查抖动来源
     const status = c.flaky === true ? `${c.status.toUpperCase()} (flaky, ${c.attempts} attempts)` : c.status.toUpperCase()
+    // 可靠性列仅 trials > 1 时有值：p=单次成功率 + pass@k/pass^k（括号里是通过数/trial 数）
+    const reliability =
+      c.reliability === undefined
+        ? '-'
+        : `p=${c.reliability.successRate.toFixed(2)} pass@${c.reliability.k}=${c.reliability.passAtK.toFixed(2)} pass^${c.reliability.k}=${c.reliability.passPowK.toFixed(2)} (${c.reliability.passes}/${c.reliability.trials})`
     lines.push(
-      `| ${mdEscape(c.name)} | ${status} | ${c.steps} | ${c.events}/${c.skippedLines} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${c.durationMs} |`,
+      `| ${mdEscape(c.name)} | ${status} | ${c.steps} | ${c.events}/${c.skippedLines} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${reliability} | ${c.durationMs} |`,
     )
   }
   const failed = report.cases.filter((c) => c.status !== 'pass')

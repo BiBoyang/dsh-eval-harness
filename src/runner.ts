@@ -10,6 +10,7 @@ import { renderJson, renderMarkdown } from './report.js'
 import { CURRENT_REPORT_SCHEMA_VERSION, emptyTokenUsage } from './types.js'
 import type { AttemptResult, CaseResult, CollectedTrace, EvalAssert, EvalCase, RunReport } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
+import { buildReliability } from './reliability.js'
 
 /** harness 自身版本（写进 report.json，与 package.json 保持同步）。 */
 const harnessVersion = (createRequire(import.meta.url)('../package.json') as { version: string }).version
@@ -29,6 +30,10 @@ export interface RunOptions {
   concurrency?: number
   /** 失败重跑的全局默认次数（非负整数，默认 0 不重跑）；用例 yaml 的 retries 优先于此值 */
   retries?: number
+  /** 可靠性测量的独立 trial 次数（正整数，默认 1 单次）；用例 yaml 的 trials 优先于此值。trials > 1 时忽略 retries */
+  trials?: number
+  /** pass@k / pass^k 的 k（正整数，默认 2）；任何 trials > 1 的用例要求 k ≤ trials，否则报错 */
+  passK?: number
   /**
    * output_judge 的判定函数注入口（测试用；缺省用 src/judge.ts 的真实实现，
    * 配置走环境变量）。不进 eval_run 工具的 parameters schema——工具层无感。
@@ -73,6 +78,11 @@ export function parseCase(text: string, file: string): EvalCase {
   if (raw.retries !== undefined) {
     if (typeof raw.retries !== 'number' || !Number.isInteger(raw.retries) || raw.retries < 0) {
       throw new Error(`${PREFIX}: failed to parse case file '${file}': 'retries' must be a non-negative integer`)
+    }
+  }
+  if (raw.trials !== undefined) {
+    if (typeof raw.trials !== 'number' || !Number.isInteger(raw.trials) || raw.trials < 1) {
+      throw new Error(`${PREFIX}: failed to parse case file '${file}': 'trials' must be a positive integer`)
     }
   }
   if (!raw.assert || typeof raw.assert !== 'object' || Array.isArray(raw.assert)) {
@@ -135,7 +145,7 @@ export function parseCase(text: string, file: string): EvalCase {
     }
     assert.output_judge = { rubric: judge.rubric }
   }
-  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, assert }
+  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, trials: raw.trials as number | undefined, assert }
 }
 
 /**
@@ -394,6 +404,8 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   const timeoutMs = options.timeoutMs ?? 600_000
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1))
   const retriesDefault = Math.max(0, Math.floor(options.retries ?? 0))
+  const trialsDefault = Math.max(1, Math.floor(options.trials ?? 1))
+  const passK = Math.max(1, Math.floor(options.passK ?? 2))
   // judge 缺省用真实实现（env 配置）；测试经 RunOptions.judge 注入假实现
   const judgeFn = options.judge ?? judgeOutput
   const casesDir = resolve(options.casesDir)
@@ -411,6 +423,13 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   )
   if (cases.length === 0) {
     throw new Error(`${PREFIX}: no cases matched filter (tags=${JSON.stringify(options.tags ?? [])} only=${JSON.stringify(options.only ?? [])}) in '${casesDir}'`)
+  }
+  // pass@k 的 k 不能超出任何用例的有效 trials：小样本外推会给出虚假精确的数
+  for (const { evalCase } of cases) {
+    const trials = evalCase.trials ?? trialsDefault
+    if (trials > 1 && passK > trials) {
+      throw new Error(`${PREFIX}: pass_k (${passK}) must not exceed trials (${trials}) of case '${evalCase.name}'`)
+    }
   }
   await mkdir(outputDir, { recursive: true })
   await mkdir(sessionBase, { recursive: true })
@@ -520,12 +539,37 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     }
 
     // flaky 治理：失败才重跑（不是固定跑 k 次）——任一 attempt 断言全过即停，
-    // 最终状态取最后一次 attempt；trace 字段随 result 天然只保留最后一次
+    // 最终状态取最后一次 attempt；trace 字段随 result 天然只保留最后一次。
+    // trials > 1 时进入可靠性测量模式：跑满 n 次独立 attempt（每次前清空 workspace），
+    // 忽略 retries——测量必须是没有重试干预的原始单次成功率
     const retries = evalCase.retries ?? retriesDefault
+    const trials = evalCase.trials ?? trialsDefault
     const totalStartedAt = Date.now()
     const attemptResults: AttemptResult[] = []
     let result = await runAttempt()
     attemptResults.push({ ...result, index: 1 })
+    if (trials > 1) {
+      while (attemptResults.length < trials) {
+        result = await runAttempt()
+        attemptResults.push({ ...result, index: attemptResults.length + 1 })
+      }
+      // 可靠性模式的状态语义与 retries 对齐：任一 trial 通过即 pass；
+      // 全未过时报最后一次 attempt 的状态（fail / error）
+      const passes = attemptResults.filter((a) => a.status === 'pass').length
+      if (passes > 0) {
+        result = { ...result, status: 'pass', failures: [] }
+        delete result.error
+      }
+      return {
+        name: evalCase.name,
+        ...result,
+        attempts: attemptResults.length,
+        attemptResults,
+        flaky: attemptResults.some((a) => a.status !== 'pass') && passes > 0 ? true : undefined,
+        reliability: buildReliability(attemptResults, passK),
+        durationMs: Date.now() - totalStartedAt,
+      }
+    }
     while (result.status !== 'pass' && attemptResults.length <= retries) {
       result = await runAttempt()
       attemptResults.push({ ...result, index: attemptResults.length + 1 })

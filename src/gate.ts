@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import type { AttemptResult, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateVerdict, RunReport, TokenUsage } from './types.js'
+import type { AttemptResult, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateVerdict, RunReport, TokenUsage } from './types.js'
 import { CURRENT_REPORT_SCHEMA_VERSION } from './types.js'
 
 /** gate 视角的归一化状态：error 按 fail 处理 */
@@ -283,6 +283,20 @@ function syntheticAttempt(value: Record<string, unknown>, status: CaseStatus, pa
   }
 }
 
+function normalizeReliability(value: unknown, path: string): CaseReliability {
+  if (!isRecord(value)) failReport(path, 'reliability must be a mapping')
+  const trials = positiveInteger(value.trials, 'reliability.trials', path)
+  const passes = nonNegativeInteger(value.passes, 'reliability.passes', path)
+  if (passes > trials) failReport(path, 'reliability.passes must not exceed trials')
+  const k = positiveInteger(value.k, 'reliability.k', path)
+  const rate = (key: 'successRate' | 'passAtK' | 'passPowK'): number => {
+    const v = value[key]
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) failReport(path, `reliability.${key} must be a number in [0, 1]`)
+    return v
+  }
+  return { trials, passes, successRate: rate('successRate'), passAtK: rate('passAtK'), passPowK: rate('passPowK'), k }
+}
+
 function normalizeCase(value: unknown, index: number, schemaVersion: 0 | 1, path: string): CaseResult {
   if (!isRecord(value)) failReport(path, `cases[${index}] must be a mapping`)
   const name = requiredString(value.name, `cases[${index}].name`, path)
@@ -352,6 +366,7 @@ function normalizeCase(value: unknown, index: number, schemaVersion: 0 | 1, path
     attempts,
     attemptResults,
     ...(value.flaky !== undefined && hasAttemptHistory ? { flaky: value.flaky as boolean } : {}),
+    ...(value.reliability === undefined ? {} : { reliability: normalizeReliability(value.reliability, path) }),
   }
 }
 

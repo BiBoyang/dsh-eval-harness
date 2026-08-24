@@ -62,6 +62,8 @@ export interface EvalCase {
   tags?: string[]
   /** 失败重跑次数（非负整数；缺省用 eval_run 的全局 retries，最终至少跑一次） */
   retries?: number
+  /** 可靠性测量的独立 trial 次数（正整数；缺省用 eval_run 的全局 trials，默认 1 单次）。trials > 1 时忽略 retries——测量必须是没有重试干预的原始单次成功率 */
+  trials?: number
   assert: EvalAssert
 }
 
@@ -145,6 +147,22 @@ export interface AttemptResult {
   durationMs: number
 }
 
+/** 每条用例的可靠性测量（trials > 1 时写入；trials = 1 时省略） */
+export interface CaseReliability {
+  /** 独立 trial 次数 */
+  trials: number
+  /** 通过的 trial 数 */
+  passes: number
+  /** 单次成功率 passes/trials */
+  successRate: number
+  /** 无偏估计：k 次独立尝试至少一次通过的概率（1 - C(n-c,k)/C(n,k)） */
+  passAtK: number
+  /** k 次独立尝试全部通过的概率（(c/n)^k） */
+  passPowK: number
+  /** passAtK/passPowK 使用的 k（约束 k ≤ trials） */
+  k: number
+}
+
 /** 单条用例运行结果 */
 export interface CaseResult {
   name: string
@@ -181,6 +199,8 @@ export interface CaseResult {
   attemptResults: AttemptResult[]
   /** 最终 pass 但中途有失败 attempt 时为 true（flaky 标记；其余情况省略） */
   flaky?: boolean
+  /** trials > 1 时的可靠性测量；单次运行的用例省略 */
+  reliability?: CaseReliability
 }
 
 /** eval_run 产出的报告（写 <output_dir>/report.json） */

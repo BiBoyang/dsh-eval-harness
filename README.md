@@ -31,6 +31,7 @@ dsh --profile headless --dump-config | grep dsh-eval-harness
 | --- | --- |
 | `eval_run` | 跑 cases_dir 下全部用例：headless 驱动真实 agent → 采集 session trace → 断言 → 写 report.json/report.md |
 | `eval_gate` | 对比 baseline 与本次报告，输出门禁判定（OVERALL/EXIT_CODE），strict 模式收紧 WARN 退出码 |
+| `eval_judge_validate` | 在人工标注集上校准 LLM judge：报混淆矩阵与 TPR/TNR（分开看，agreement 会骗人），双指标达标才算 calibrated |
 
 ### Skills
 
@@ -48,6 +49,8 @@ prompt: "发给 agent 的内容"      # 多行可用块标量 `|`
 require_plugins: [some-plugin]  # 可选，元信息
 tags: [fast]                    # 可选，标签；eval_run 的 tags 筛选按任一命中匹配
 retries: 1                      # 可选，失败重跑次数（非负整数，缺省用 eval_run 的全局 retries）
+trials: 3                       # 可选，可靠性测量的独立 trial 次数（正整数，缺省用 eval_run 的全局 trials，默认 1）；
+                                # trials > 1 时忽略 retries——测量必须是无重试干预的原始单次成功率
 assert:
   turn_end: completed           # turn/end 事件的 reason.kind
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
@@ -85,7 +88,7 @@ completions 接口（零依赖，Node 内置 fetch），配置全靠环境变量
 多步会话里同一段缓存的重复读回，计入会让上限随步数膨胀，故只展示、不计入。
 
 示例见 [`cases/example.case.yml`](cases/example.case.yml)。
-[`cases/real/`](cases/real/) 收录了 11 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
+[`cases/real/`](cases/real/) 收录了 12 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
 其中 `08-read-image.yml` 演示 `no_tool_errors` 如何拦下「工具报错但 agent 兜底答对」的假通过（在无视觉能力的模型上该用例预期 fail，属正常）。
 
 **解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量/map 序列、
@@ -105,7 +108,9 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 | `timeout_ms` | integer | 否 | `600000` | 单条用例子进程超时 |
 | `dsh_bin` | string | 否 | `$DSH_BIN` 或 `dsh` | dsh 可执行命令，按空白拆分；本机无全局 dsh 时用 `npx -y @deepseek-ai/dsh` |
 | `concurrency` | integer | 否 | `1` | 并行跑用例的并发数；每条用例独占 session 根与 workspace，并行互不干扰 |
-| `retries` | integer | 否 | `0` | 失败重跑的全局默认次数；单条用例最多跑 retries+1 次，任一 attempt 全过即停（fail 和 error 含超时都触发重跑）；用例 yaml 的 `retries` 优先于此值 |
+| `retries` | integer | 否 | `0` | 失败重跑的全局默认次数；单条用例最多跑 retries+1 次，任一 attempt 全过即停（fail 和 error 含超时都触发重跑）；用例 yaml 的 `retries` 优先于此值；`trials > 1` 的用例忽略重试 |
+| `trials` | integer | 否 | `1` | 可靠性测量的独立 trial 次数全局默认；`> 1` 时用例跑满 n 次隔离 attempt（每次前清空 workspace、不重试），报告写入 per-case `reliability`（successRate / pass@k / pass^k），用例状态仍为任一通过即 pass |
+| `pass_k` | integer | 否 | `2` | pass@k / pass^k 的 k；不得超过任何被测量用例的有效 trials，否则报错（小样本外推会给出虚假精确的数） |
 | `tags` | string | 否 | - | 逗号分隔标签筛选：只跑 yaml `tags` 命中任一的用例 |
 | `only` | string | 否 | - | 逗号分隔用例名（精确匹配）；与 tags 同给时取交集；筛选后无命中会直接报错（防 CI 笔误空跑假绿） |
 
@@ -122,6 +127,44 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 兼容现有 gate 与报告消费者。旧报告没有真实 attempt 历史时，loader 会合成一条单次记录，
 不会伪造旧报告不存在的重试信息。报告头部另记 `dshVersion`（`dsh --version` 探针首行），
 排障时可直接区分「dsh 变了」还是「模型变了」。
+
+`trials > 1` 的用例额外写入 `reliability`：`successRate`（单次成功率）、`passAtK`
+（无偏估计 1−C(n−c,k)/C(n,k)，不用小 n 下有偏的 naive 公式）、`passPowK`（(c/n)^k）；
+report.md 用例表新增「可靠性 (trials)」列。可靠性目前只做测量展示，不进门禁——
+阈值等数据攒起来再定。
+
+### eval_judge_validate
+
+在人工标注集上校准 judge。标注集是 JSONL，每行
+`{"rubric": "...", "output": "...", "expect": "pass"|"fail"}`。逐条调 judge
+（配置同 `output_judge` 的环境变量）后报混淆矩阵。
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `labels_path` | string | 是 | - | 人工标注 JSONL 路径 |
+| `tpr_threshold` | number | 否 | `0.9` | TPR（真失败被抓到的比例）达标线 |
+| `tnr_threshold` | number | 否 | `0.9` | TNR（真通过没被冤枉的比例）达标线 |
+
+TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡皮图章 judge 也能拿
+90% agreement——agreement 会骗人，所以 `calibrated=true` 要求两个指标都达标；
+某一维没有对应样本（比如没标 fail）时该维记 null 且整体不达标。判定与标注不一致
+的条目收在 `mismatches` 里供人工 review judge 的错法。
+
+### judge 使用与校准（工作流）
+
+`output_judge` 是唯一的非确定性断言——judge 本身是个会犯错的 LLM，它的漏判会直接
+变成门禁的假绿。所以 judge 断言的生命周期比结构断言多两步：
+
+1. **写 rubric**：写出「必须/不许」的可判定标准，避免主观词（「回答要好」这类只会
+   放大抖动）。能落成 `output_contains` / `output_matches` 的期望不要用 judge。
+2. **攒标注集**：从已有报告的 `finalText` 里抽真实输出，每条亲手标 PASS/FAIL 存成
+   JSONL（格式与示例见 `examples/judge-labels.example.jsonl`）。通过的、失败的样本
+   都要有——缺了 fail 样本就验证不了「judge 会不会抓失败」。
+3. **校准**：`eval_judge_validate` 跑标注集，TPR / TNR 都 ≥0.9（默认阈值）才算
+   calibrated；不达标先看 `mismatches` 里 judge 的错法，调 rubric 措辞再校。
+4. **进门禁**：校准通过后，`output_judge` 的判定才可以信。
+5. **重新校准的触发时机**：judge 模型更换（`EVAL_JUDGE_MODEL`）、harness 升级动了
+   judge prompt、被评输出的数据分布明显变化（比如换了被测模型）。
 
 ### eval_gate
 
@@ -181,7 +224,7 @@ baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/upd
 Actions 页手动触发 → 全量重跑 → 覆盖 `baseline/report.json` 并开 PR（附报告摘要），
 人工复核后合并，不自动合入。
 
-`baseline/report.json` 已入库（v0.3.1 全量重跑人工复核：11 条全 PASS；`read-image` 仅在无视觉能力的模型上预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate
+`baseline/report.json` 已入库（12 条全量重跑人工复核：全 PASS；`read-image` 仅在无视觉能力的模型上预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate
 会把口径变化判成 WARN/FAIL。
 
 ## session trace 说明

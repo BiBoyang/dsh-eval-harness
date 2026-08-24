@@ -78,10 +78,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: npm-dsh-0.1.0-rc.6
+          key: npm-dsh-0.1.1-rc.2
 
       - name: Install dsh
-        run: npm install -g @deepseek-ai/dsh@0.1.0-rc.6
+        run: npm install -g @deepseek-ai/dsh@0.1.1-rc.2
 
       - name: Run eval cases (real LLM)
         # fork / 未配置 DEEPSEEK_API_KEY 的环境跳过评测，不直接红（build+test 仍会跑）

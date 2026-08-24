@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { computeGate, loadReport, renderGateJson, renderGateText } from './gate.js'
+import { validateJudge } from './judge.js'
 import { runEval } from './runner.js'
 
 export const name = 'dsh-eval-harness'
@@ -54,7 +55,18 @@ export function apply(ctx: Context): void {
           type: 'integer',
           default: 0,
           description:
-            'Global default retry-on-failure count (default 0, no retry). A case runs at most retries+1 attempts and stops at the first fully passing attempt; fail and error (incl. timeout) both trigger a retry. The per-case yaml retries field takes precedence over this value.',
+            'Global default retry-on-failure count (default 0, no retry). A case runs at most retries+1 attempts and stops at the first fully passing attempt; fail and error (incl. timeout) both trigger a retry. The per-case yaml retries field takes precedence over this value. Ignored for cases with trials > 1.',
+        },
+        trials: {
+          type: 'integer',
+          default: 1,
+          description:
+            'Global default independent-trial count for reliability measurement (default 1, single run). With trials > 1, the case runs exactly trials isolated attempts (workspace reset before each, no retries) and the report gains a per-case reliability block (successRate / pass@k / pass^k); case status stays any-pass. The per-case yaml trials field takes precedence.',
+        },
+        pass_k: {
+          type: 'integer',
+          default: 2,
+          description: 'k for pass@k / pass^k reliability metrics (default 2). Must not exceed the effective trials of any measured case.',
         },
         tags: {
           type: 'string',
@@ -78,6 +90,8 @@ export function apply(ctx: Context): void {
           dshBin: args.dsh_bin === undefined ? undefined : String(args.dsh_bin),
           concurrency: typeof args.concurrency === 'number' ? args.concurrency : undefined,
           retries: typeof args.retries === 'number' ? args.retries : undefined,
+          trials: typeof args.trials === 'number' ? args.trials : undefined,
+          passK: typeof args.pass_k === 'number' ? args.pass_k : undefined,
           tags: splitCsv(args.tags),
           only: splitCsv(args.only),
         })
@@ -135,6 +149,42 @@ export function apply(ctx: Context): void {
         return args.gate_json === true ? renderGateJson(report) : renderGateText(report)
       },
       timeoutMs: 30_000,
+    }),
+  )
+
+  ctx.tools.register(
+    defineTool({
+      name: 'eval_judge_validate',
+      description:
+        'Calibrate the LLM judge against a human-labeled set: run judgeOutput per label and report the confusion matrix with TPR (real failures caught) and TNR (real passes not wronged) separately — raw agreement is misleading when most labels pass. Labels file is JSONL, one {"rubric": string, "output": string, "expect": "pass"|"fail"} per line. Output is a JSON text report; calibrated=true only when both TPR and TNR meet their thresholds.',
+      parameters: {
+        labels_path: {
+          type: 'string',
+          required: true,
+          description: 'Path to the human-labeled JSONL file.',
+        },
+        tpr_threshold: {
+          type: 'number',
+          default: 0.9,
+          description: 'Minimum TPR (real failures caught) for calibrated=true. Default 0.9.',
+        },
+        tnr_threshold: {
+          type: 'number',
+          default: 0.9,
+          description: 'Minimum TNR (real passes not wronged) for calibrated=true. Default 0.9.',
+        },
+      },
+      output: { schema: { type: 'string' }, render: renderJsonText },
+      execute: async (args) => {
+        const calibration = await validateJudge({
+          labelsPath: String(args.labels_path),
+          tprThreshold: typeof args.tpr_threshold === 'number' ? args.tpr_threshold : undefined,
+          tnrThreshold: typeof args.tnr_threshold === 'number' ? args.tnr_threshold : undefined,
+        })
+        return JSON.stringify(calibration)
+      },
+      // 校准集是几十条量级的串行短调用，但 judge 走外部 API，预算放宽
+      timeoutMs: 600_000,
     }),
   )
 }

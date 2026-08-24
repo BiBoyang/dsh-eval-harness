@@ -1,0 +1,28 @@
+name: read-image-oversized
+prompt: |
+  请依次完成，并真实调用工具：
+  1. 用 bash 工具执行这条命令生成一张宽 2500 像素、高 4 像素的 PNG：
+     python3 -c "
+     import zlib, struct
+     def c(t, d):
+         return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+     w, h = 2500, 4
+     raw = b''.join(b'\x00' + b'\xff\x00\x00' * w for _ in range(h))
+     png = b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + c(b'IDAT', zlib.compress(raw)) + c(b'IEND', b'')
+     open('big.png', 'wb').write(png)
+     "
+  2. 用 read_image 工具读取 big.png；
+  3. 告诉我结果。如果工具报错了，把错误原因原样告诉我。
+require_plugins: ["@deepseek-ai/dsh-tool-fs", "@deepseek-ai/dsh-tool-bash"]
+assert:
+  turn_end: completed
+  tools_called: [bash, read_image]
+  no_tool_errors: true
+  # 锁死 deepseek-harness#2626 的修复契约：边长超 2000px 的图片必须在准入时降采样
+  # 并在结果文本里声明（修复前原尺寸直接进会话历史，可能毒化后续请求）。
+  # 红绿已实测：dsh 0.1.1-rc.2 PASS（含 downscaled 标注），0.1.0-rc.6 FAIL（无标注）。
+  tool_result_contains:
+    - name: read_image
+      contains: "downscaled from 2500x4"
+  max_steps: 12
+  max_tokens: 40000
