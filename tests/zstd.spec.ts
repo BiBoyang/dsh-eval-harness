@@ -18,11 +18,14 @@ describe('scanZstdFrames', () => {
     const { frames, tornStart } = scanZstdFrames(buf)
     expect(tornStart).toBeUndefined()
     expect(frames).toHaveLength(2)
+    const first = frames[0]
+    const second = frames[1]
+    if (!first || !second) throw new Error('expected two zstd frames')
     // 每帧都以 28 b5 2f fd 魔数开头
-    expect(buf.subarray(frames[0]!.start, frames[0]!.start + 4).toString('hex')).toBe('28b52ffd')
-    expect(buf.subarray(frames[1]!.start, frames[1]!.start + 4).toString('hex')).toBe('28b52ffd')
+    expect(buf.subarray(first.start, first.start + 4).toString('hex')).toBe('28b52ffd')
+    expect(buf.subarray(second.start, second.start + 4).toString('hex')).toBe('28b52ffd')
     // 第二帧紧接第一帧结束
-    expect(frames[1]!.start).toBe(frames[0]!.end)
+    expect(second.start).toBe(first.end)
   })
 
   it('reports tornStart when EOF interrupts a frame', () => {
@@ -132,8 +135,10 @@ describe('fixture integrity', () => {
     const bytes = await readFile(join(fixtureDir, 'real-session.jsonl.zstd'))
     const { frames } = scanZstdFrames(bytes)
     expect(frames.length).toBeGreaterThanOrEqual(3)
+    const first = frames[0]
+    if (!first) throw new Error('missing zstd header frame')
     // 首帧恰好是 header 行（session），后续帧为事件批
-    expect(decodeZstdLog(bytes.subarray(frames[0]!.start, frames[0]!.end)).trim()).toMatch(/^\{.*"type":"session"/)
+    expect(decodeZstdLog(bytes.subarray(first.start, first.end)).trim()).toMatch(/^\{.*"type":"session"/)
   })
 
   it('readSessionHeader reads only the header line from both encodings', async () => {

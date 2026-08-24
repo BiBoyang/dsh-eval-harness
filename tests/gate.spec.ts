@@ -1,5 +1,8 @@
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { computeGate, gateExitCode, renderGateJson, renderGateText } from '../src/gate.ts'
+import { computeGate, gateExitCode, loadReport, renderGateJson, renderGateText } from '../src/gate.ts'
 import type { CaseResult, CaseStatus, RunReport } from '../src/types.ts'
 
 function caseResult(name: string, status: CaseStatus): CaseResult {
@@ -14,16 +17,36 @@ function caseResult(name: string, status: CaseStatus): CaseResult {
     steps: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 },
     toolErrors: [],
+    events: 0,
+    skippedLines: 0,
     durationMs: 1,
     attempts: 1,
+    attemptResults: [{
+      index: 1,
+      status,
+      failures: status === 'fail' ? ['boom'] : [],
+      toolsCalled: [],
+      toolCalls: [],
+      toolResults: [],
+      finalText: '',
+      steps: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 },
+      toolErrors: [],
+      events: 0,
+      skippedLines: 0,
+      durationMs: 1,
+    }],
   }
 }
 
 function report(cases: CaseResult[]): RunReport {
   return {
+    schemaVersion: 1,
     tool: 'dsh-eval-harness',
     version: '0.1.0',
     startedAt: '2026-08-13T00:00:00.000Z',
+    finishedAt: '2026-08-13T00:00:01.000Z',
+    durationMs: 1000,
     profile: 'headless',
     cases,
     summary: {
@@ -193,5 +216,93 @@ describe('gate output rendering', () => {
     expect(parsed.verdict).toBe('FAIL')
     expect(parsed.exitCode).toBe(1)
     expect(renderGateJson(g)).not.toContain('\n')
+  })
+})
+
+describe('loadReport schema validation', () => {
+  const writeReport = async (value: unknown): Promise<string> => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-report-'))
+    const path = join(root, 'report.json')
+    await writeFile(path, JSON.stringify(value))
+    return path
+  }
+
+  it('loads current schema 1 reports', async () => {
+    const path = await writeReport(report([caseResult('a', 'pass')]))
+    const loaded = await loadReport(path)
+    expect(loaded?.schemaVersion).toBe(1)
+    expect(loaded?.cases[0]?.events).toBe(0)
+    expect(loaded?.cases[0]?.attemptResults).toHaveLength(1)
+  })
+
+  it('normalizes legacy reports without schemaVersion', async () => {
+    const legacy = {
+      tool: 'dsh-eval-harness',
+      version: '0.2.0',
+      startedAt: '2026-08-14T02:48:31.228Z',
+      profile: 'headless',
+      cases: [
+        {
+          name: 'legacy',
+          status: 'pass',
+          failures: [],
+          toolsCalled: [],
+          toolCalls: [],
+          toolResults: [],
+          finalText: 'ok',
+          steps: 0,
+          tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 3 },
+          toolErrors: [],
+          durationMs: 4,
+        },
+      ],
+      summary: { total: 1, passed: 1, failed: 0, errored: 0 },
+    }
+    const loaded = await loadReport(await writeReport(legacy))
+    expect(loaded?.schemaVersion).toBe(0)
+    expect(loaded?.finishedAt).toBe(legacy.startedAt)
+    expect(loaded?.durationMs).toBe(0)
+    expect(loaded?.cases[0]?.attempts).toBe(1)
+    expect(loaded?.cases[0]?.events).toBe(0)
+    expect(loaded?.cases[0]?.attemptResults).toHaveLength(1)
+  })
+
+  it('normalizes pre-attempt-history flaky reports without fabricating attempts', async () => {
+    const base = caseResult('legacy-flaky', 'pass')
+    const legacy = {
+      ...report([base]),
+      schemaVersion: 0,
+      cases: [{ ...base, attempts: 2, flaky: true, attemptResults: undefined }],
+    }
+    const loaded = await loadReport(await writeReport(legacy))
+    expect(loaded?.cases[0]?.attempts).toBe(1)
+    expect(loaded?.cases[0]?.attemptResults).toHaveLength(1)
+    expect(loaded?.cases[0]?.flaky).toBeUndefined()
+  })
+
+  it('rejects unsupported schema versions', async () => {
+    const path = await writeReport({ ...report([]), schemaVersion: 2 })
+    await expect(loadReport(path)).rejects.toThrow(/unsupported schemaVersion '2'/)
+  })
+
+  it('rejects duplicate names and summary mismatches', async () => {
+    const duplicate = report([caseResult('a', 'pass'), caseResult('a', 'pass')])
+    await expect(loadReport(await writeReport(duplicate))).rejects.toThrow(/duplicate case name 'a'/)
+
+    const mismatch = { ...report([caseResult('a', 'pass')]), summary: { total: 1, passed: 0, failed: 1, errored: 0 } }
+    await expect(loadReport(await writeReport(mismatch))).rejects.toThrow(/summary does not match cases/)
+  })
+
+  it('rejects inconsistent attempt history', async () => {
+    const base = caseResult('a', 'pass')
+    const mismatch = { ...report([base]), cases: [{ ...base, attempts: 2, attemptResults: base.attemptResults }] }
+    await expect(loadReport(await writeReport(mismatch))).rejects.toThrow(/attempts must equal attemptResults.length/)
+    const wrongStatus = { ...report([base]), cases: [{ ...base, attemptResults: [{ ...base.attemptResults[0], status: 'fail' }] }] }
+    await expect(loadReport(await writeReport(wrongStatus))).rejects.toThrow(/last status must equal case status/)
+  })
+
+  it('returns null for a missing optional baseline', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-report-missing-'))
+    expect(await loadReport(join(root, 'missing.json'), true)).toBeNull()
   })
 })

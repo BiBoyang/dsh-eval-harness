@@ -128,7 +128,8 @@ export function apply(ctx: Context): void {
       execute: async (args) => {
         const after = await loadReport(String(args.after))
         const before = args.before === undefined ? null : await loadReport(String(args.before), true)
-        const report = computeGate(before, after!, args.strict === true, {
+        if (!after) throw new Error('eval_gate: current report is missing')
+        const report = computeGate(before, after, args.strict === true, {
           maxTokenIncreasePct: typeof args.max_token_increase_pct === 'number' ? args.max_token_increase_pct : undefined,
         })
         return args.gate_json === true ? renderGateJson(report) : renderGateText(report)

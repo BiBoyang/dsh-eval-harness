@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildOverlayYaml, filterCases, findSessionFile, parseCase, runEval, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildOverlayYaml, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
@@ -55,6 +55,20 @@ describe('splitDshBin', () => {
   })
   it('throws eval_run: prefixed error on empty input', () => {
     expect(() => splitDshBin('   ')).toThrow(/^eval_run: dsh_bin is empty$/)
+  })
+})
+
+describe('resolveDshCommand', () => {
+  it('rejects a dsh executable whose --version probe exits non-zero', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-probe-'))
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      ['#!/bin/sh', 'if [ "$1" = "--version" ]; then echo probe-broken >&2; exit 7; fi', 'exit 0', ''].join('\n'),
+      { mode: 0o755 },
+    )
+
+    expect(() => resolveDshCommand(fakeBin)).toThrow(/dsh version probe exited 7.*probe-broken/)
   })
 })
 
@@ -240,8 +254,15 @@ describe('runEval concurrency + filtering', () => {
     const out = join(root, 'out')
     const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, concurrency: 3, timeoutMs: 10_000 })
 
+    expect(report.schemaVersion).toBe(1)
     expect(report.cases.map((c) => c.name)).toEqual(['case-a', 'case-b', 'case-c'])
     expect(report.cases.every((c) => c.status === 'pass')).toBe(true)
+    expect(Date.parse(report.finishedAt)).toBeGreaterThanOrEqual(Date.parse(report.startedAt))
+    expect(report.durationMs).toBeGreaterThanOrEqual(0)
+    expect(report.cases[0]?.exitCode).toBe(0)
+    expect(report.cases[0]?.timedOut).toBe(false)
+    expect(report.cases[0]?.events).toBe(2)
+    expect(report.cases[0]?.skippedLines).toBe(0)
     // 每条用例独占 session 根（<output>/.sessions/<序号>-<slug>/），并行互不干扰
     for (const dir of ['000-case-a', '001-case-b', '002-case-c']) {
       expect(await findSessionFile(join(out, '.sessions', dir), 0)).not.toBeNull()
@@ -342,12 +363,55 @@ describe('runEval timeout', () => {
     const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 })
 
     expect(report.cases).toHaveLength(1)
-    const c = report.cases[0]!
+    const c = report.cases[0]
+    if (!c) throw new Error('missing timeout case result')
     expect(c.status).toBe('error')
     expect(c.error).toContain('timed out')
+    expect(c.timedOut).toBe(true)
+    expect(c.exitCode).toBeNull()
+    expect(c.events).toBe(2)
+    expect(c.skippedLines).toBe(0)
     // 部分 trace 已进入 report（而不是全空）
     expect(c.toolsCalled).toEqual(['bash'])
     expect(c.toolCalls).toEqual([{ name: 'bash', callId: 'c1', argsJson: '{}' }])
+  }, 15_000)
+})
+
+describe('runEval process exit status', () => {
+  it('keeps a passing trace but reports error when dsh exits non-zero', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-exit-'))
+    const fakeBin = join(root, 'fake-dsh')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+        'echo process-broken >&2',
+        'exit 9',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'e.yml'), 'name: non-zero-exit\nprompt: "p"\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 10_000 })
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('exited with code 9')
+    expect(c.error).toContain('process-broken')
+    expect(c.exitCode).toBe(9)
+    expect(c.timedOut).toBe(false)
+    expect(c.stderrTail).toContain('process-broken')
+    // 进程失败不能被“看起来满足断言”的 trace 覆盖，但 trace 仍保留供排障。
+    expect(c.toolsCalled).toEqual(['bash'])
+    expect(c.events).toBe(2)
   }, 15_000)
 })
 
@@ -420,6 +484,8 @@ describe('runEval retries (flaky 治理)', () => {
     expect(c.status).toBe('pass')
     expect(c.attempts).toBe(2)
     expect(c.flaky).toBe(true)
+    expect(c.attemptResults.map((a) => a.status)).toEqual(['fail', 'pass'])
+    expect(c.attemptResults.map((a) => a.index)).toEqual([1, 2])
     const md = await readFile(join(out, 'report.md'), 'utf8')
     expect(md).toContain('PASS (flaky, 2 attempts)')
   }, 15_000)
@@ -515,6 +581,7 @@ describe('runEval retries (flaky 治理)', () => {
     expect(c.status).toBe('pass')
     expect(c.attempts).toBe(2)
     expect(c.flaky).toBe(true)
+    expect(c.attemptResults.map((a) => a.status)).toEqual(['error', 'pass'])
   }, 15_000)
 })
 

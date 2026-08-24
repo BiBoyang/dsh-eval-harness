@@ -99,8 +99,9 @@ export function scanZstdFrames(buffer: Buffer): ZstdFrameScan {
  */
 export function decodeZstdFirstFrame(buffer: Buffer): Buffer | null {
   const { frames } = scanZstdFrames(buffer)
-  if (frames.length === 0) return null
-  return zstdDecompressSync(buffer.subarray(frames[0]!.start, frames[0]!.end))
+  const first = frames[0]
+  if (!first) return null
+  return zstdDecompressSync(buffer.subarray(first.start, first.end))
 }
 
 /**

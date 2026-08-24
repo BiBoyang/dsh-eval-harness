@@ -132,7 +132,7 @@ const pick = [
 ].filter(Boolean)
 
 const records = pick.map((l) => redact(l))
-const jsonl = records.map((r) => JSON.stringify(r)).join('\n') + '\n'
+const jsonl = `${records.map((r) => JSON.stringify(r)).join('\n')}\n`
 
 // 帧布局：首帧 header 行，事件按批分组（与 dsh-session-persistence-jsonl 一致）
 const [header, ...rest] = records
@@ -141,8 +141,8 @@ const batches = []
 for (let i = 0; i < rest.length; i += batchSize) batches.push(rest.slice(i, i + batchSize))
 const compress = (s) => zstdCompressSync(Buffer.from(s), { params: { [constants.ZSTD_c_checksumFlag]: 1 } })
 const zstd = Buffer.concat([
-  compress(JSON.stringify(header) + '\n'),
-  ...batches.map((b) => compress(b.map((r) => JSON.stringify(r)).join('\n') + '\n')),
+  compress(`${JSON.stringify(header)}\n`),
+  ...batches.map((b) => compress(`${b.map((r) => JSON.stringify(r)).join('\n')}\n`)),
 ])
 
 const outDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures')

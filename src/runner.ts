@@ -7,8 +7,8 @@ import { collectFromFile, readSessionHeader } from './collector.js'
 import { summarize } from './gate.js'
 import { judgeOutput } from './judge.js'
 import { renderJson, renderMarkdown } from './report.js'
-import { emptyTokenUsage } from './types.js'
-import type { CaseResult, CollectedTrace, EvalAssert, EvalCase, RunReport } from './types.js'
+import { CURRENT_REPORT_SCHEMA_VERSION, emptyTokenUsage } from './types.js'
+import type { AttemptResult, CaseResult, CollectedTrace, EvalAssert, EvalCase, RunReport } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
 
 /** harness 自身版本（写进 report.json，与 package.json 保持同步）。 */
@@ -210,6 +210,17 @@ export function resolveDshCommand(dshBin?: string): DshCommand {
       `${PREFIX}: dsh executable not found ('${configured}'): ${probe.error.message}. Install dsh or set DSH_BIN / pass dsh_bin (e.g. 'npx -y @deepseek-ai/dsh').`,
     )
   }
+  const stderrTail = typeof probe.stderr === 'string' ? probe.stderr.trim().slice(-8192) : ''
+  if (probe.signal) {
+    throw new Error(
+      `${PREFIX}: dsh version probe was terminated by signal ${probe.signal}${stderrTail ? `: ${stderrTail}` : ''}`,
+    )
+  }
+  if (probe.status !== 0) {
+    throw new Error(
+      `${PREFIX}: dsh version probe exited ${probe.status ?? '<unknown>'}${stderrTail ? `: ${stderrTail}` : ''}`,
+    )
+  }
   return cmd
 }
 
@@ -271,7 +282,10 @@ export async function findSessionFile(dir: string, sinceMs: number): Promise<str
   }
   const candidates = await walk(dir)
   if (candidates.length === 0) return null
-  if (candidates.length === 1) return candidates[0]!.path
+  if (candidates.length === 1) {
+    const only = candidates[0]
+    return only?.path ?? null
+  }
   const ranked = await Promise.all(
     candidates.map(async (c) => {
       const header = await readSessionHeader(c.path)
@@ -280,7 +294,8 @@ export async function findSessionFile(dir: string, sinceMs: number): Promise<str
     }),
   )
   ranked.sort((a, b) => a.rank - b.rank || b.mtime - a.mtime)
-  return ranked[0]!.path
+  const best = ranked[0]
+  return best?.path ?? null
 }
 
 function runOne(
@@ -327,7 +342,23 @@ function traceFields(trace: CollectedTrace): Partial<Omit<CaseResult, 'status' |
     steps: trace.steps,
     tokens: trace.tokens,
     toolErrors: trace.toolErrors,
+    events: trace.events,
+    skippedLines: trace.skippedLines,
   }
+}
+
+/** dsh 子进程结果写入 report 的诊断字段（stderr 为空时不写，避免报告噪声）。 */
+function processFields(proc: { code: number | null; timedOut: boolean; stderrTail: string }): Pick<CaseResult, 'exitCode' | 'timedOut'> & Partial<Pick<CaseResult, 'stderrTail'>> {
+  return {
+    exitCode: proc.code,
+    timedOut: proc.timedOut,
+    ...(proc.stderrTail ? { stderrTail: proc.stderrTail } : {}),
+  }
+}
+
+function processExitError(proc: { code: number | null; stderrTail: string }): string {
+  const status = proc.code === null ? 'terminated without an exit code' : `exited with code ${proc.code}`
+  return `dsh subprocess ${status}${proc.stderrTail ? `: ${proc.stderrTail}` : ''}`
 }
 
 /** 超时/被杀后尽力采集部分 trace；任何失败返回 null（不掩盖超时本身）。 */
@@ -353,6 +384,8 @@ async function tryCollectTrace(sessionBase: string, sinceMs: number): Promise<Co
  * tags / only 筛选后无命中用例会直接报错（防止 CI 里筛选条件笔误导致空跑假绿）。
  */
 export async function runEval(options: RunOptions): Promise<RunReport> {
+  const runStartedAtMs = Date.now()
+  const runStartedAt = new Date(runStartedAtMs).toISOString()
   const profile = options.profile ?? 'headless'
   const timeoutMs = options.timeoutMs ?? 600_000
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1))
@@ -390,15 +423,14 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     await writeFile(overlayPath, buildOverlayYaml(sessionRoot))
 
     /** 单次 attempt：失败/错误（含超时）返回非 pass 状态，由外层决定是否重跑 */
-    const runAttempt = async (): Promise<Omit<CaseResult, 'attempts' | 'flaky'>> => {
+    const runAttempt = async (): Promise<Omit<AttemptResult, 'index'>> => {
       // 每次 attempt 前清空重建 workspace：上一次 attempt 的 fs 副作用（agent 落的
       // 文件、缓存）会让重跑假通过；session 根复用，findSessionFile 按 attempt
       // 起点过滤（sinceMs），只采集本次 attempt 的 trace
       await rm(workspace, { recursive: true, force: true })
       await mkdir(workspace, { recursive: true })
       const startedAt = Date.now()
-      const base: Omit<CaseResult, 'status' | 'durationMs' | 'attempts' | 'flaky'> = {
-        name: evalCase.name,
+      const base: Omit<AttemptResult, 'index' | 'status' | 'durationMs'> = {
         failures: [],
         toolsCalled: [],
         toolCalls: [],
@@ -407,14 +439,18 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         steps: 0,
         tokens: emptyTokenUsage(),
         toolErrors: [],
+        events: 0,
+        skippedLines: 0,
       }
       try {
         const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs)
+        const procFields = processFields(proc)
         if (proc.timedOut) {
           const partial = await tryCollectTrace(sessionRoot, startedAt)
           return {
             ...base,
             ...(partial ? traceFields(partial) : {}),
+            ...procFields,
             status: 'error',
             error: `dsh subprocess timed out after ${timeoutMs}ms`,
             durationMs: Date.now() - startedAt,
@@ -422,10 +458,26 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         }
         const sessionFile = await findSessionFile(sessionRoot, startedAt)
         if (!sessionFile) {
-          const detail = proc.code !== 0 ? ` (dsh exited ${proc.code}${proc.stderrTail ? `: ${proc.stderrTail}` : ''})` : ''
-          return { ...base, status: 'error', error: `no session log (session.jsonl / session.jsonl.zstd) found under '${sessionRoot}'${detail}`, durationMs: Date.now() - startedAt }
+          const detail = proc.code !== 0 ? ` (${processExitError(proc)})` : ''
+          return {
+            ...base,
+            ...procFields,
+            status: 'error',
+            error: `no session log (session.jsonl / session.jsonl.zstd) found under '${sessionRoot}'${detail}`,
+            durationMs: Date.now() - startedAt,
+          }
         }
         const trace = await collectFromFile(sessionFile)
+        if (proc.code !== 0) {
+          return {
+            ...base,
+            ...traceFields(trace),
+            ...procFields,
+            status: 'error',
+            error: processExitError(proc),
+            durationMs: Date.now() - startedAt,
+          }
+        }
         const failures = checkAssertions(evalCase.assert, trace)
         // judge 兜语义：仅当结构性断言全过且用例带 output_judge 才调——
         // 结构已失败的 attempt 重跑也过不了，不白烧 judge token
@@ -442,6 +494,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
             return {
               ...base,
               ...traceFields(trace),
+              ...procFields,
               status: 'error',
               error: `${PREFIX}: output_judge: judge call failed: ${(err as Error).message}`,
               failures: [],
@@ -452,6 +505,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         return {
           ...base,
           ...traceFields(trace),
+          ...procFields,
           status: failures.length === 0 ? 'pass' : 'fail',
           failures,
           durationMs: Date.now() - startedAt,
@@ -465,16 +519,19 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     // 最终状态取最后一次 attempt；trace 字段随 result 天然只保留最后一次
     const retries = evalCase.retries ?? retriesDefault
     const totalStartedAt = Date.now()
-    let attempts = 1
+    const attemptResults: AttemptResult[] = []
     let result = await runAttempt()
-    while (result.status !== 'pass' && attempts <= retries) {
-      attempts++
+    attemptResults.push({ ...result, index: 1 })
+    while (result.status !== 'pass' && attemptResults.length <= retries) {
       result = await runAttempt()
+      attemptResults.push({ ...result, index: attemptResults.length + 1 })
     }
     return {
+      name: evalCase.name,
       ...result,
-      attempts,
-      flaky: result.status === 'pass' && attempts > 1 ? true : undefined,
+      attempts: attemptResults.length,
+      attemptResults,
+      flaky: result.status === 'pass' && attemptResults.length > 1 ? true : undefined,
       // 耗时按全 attempt 计：flaky 用例重跑的成本（token / 时长）应对读者可见，
       // 而不是只看最后一次 attempt
       durationMs: Date.now() - totalStartedAt,
@@ -494,15 +551,19 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, cases.length) }, () => worker()))
 
+  const runFinishedAtMs = Date.now()
   const report: RunReport = {
+    schemaVersion: CURRENT_REPORT_SCHEMA_VERSION,
     tool: 'dsh-eval-harness',
     version: harnessVersion,
-    startedAt: new Date().toISOString(),
+    startedAt: runStartedAt,
+    finishedAt: new Date(runFinishedAtMs).toISOString(),
+    durationMs: runFinishedAtMs - runStartedAtMs,
     profile,
     cases: results as CaseResult[],
     summary: summarize(results as CaseResult[]),
   }
-  await writeFile(join(outputDir, 'report.json'), renderJson(report) + '\n')
+  await writeFile(join(outputDir, 'report.json'), `${renderJson(report)}\n`)
   await writeFile(join(outputDir, 'report.md'), renderMarkdown(report))
   return report
 }

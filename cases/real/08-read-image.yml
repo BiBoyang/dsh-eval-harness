@@ -10,15 +10,15 @@ assert:
   turn_end: completed
   tools_called: ["bash", "read_image"]
   output_contains: ["1x1"]
-  # 锁死「必须靠 read_image 真实成功」：read_image 报错（如当前模型无图像输入能力）时
+  # 锁死「必须靠 read_image 真实成功」：read_image 报错（如模型无图像输入能力）时
   # 即使 agent 用 bash 兜底答对 1x1 也判 fail——防止「假通过」。
   # 预期：在无视觉能力的模型上此用例 fail，这正是要拦截的回归。
   no_tool_errors: true
-  # 刻意的负向用例（续）：无视觉能力模型上 read_image 的结果文本恰好是这条能力错误，
-  # 此时本断言 pass、no_tool_errors fail——证明错误结果被如实收进了 toolResults。
-  # 若模型具备视觉能力，read_image 成功、结果文本不含该错误串，本断言 fail（同样符合预期）。
+  # 正向断言 read_image 成功结果：工具输出形如 `<type>image</type> ... 1x1 px ...`，
+  # 结果文本必须含 1x1。无视觉能力模型上结果文本是能力报错、不含 1x1，本断言 fail
+  # （与 no_tool_errors 一致，同样符合预期）。
   tool_result_contains:
     - name: read_image
-      contains: does not declare image input
+      contains: 1x1
   max_steps: 12
   max_tokens: 40000

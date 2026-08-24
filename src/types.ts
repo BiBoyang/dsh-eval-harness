@@ -119,6 +119,32 @@ export interface CollectedTrace {
 
 export type CaseStatus = 'pass' | 'fail' | 'error'
 
+/** 当前 report.json 数据结构版本；schema 0 表示无 schemaVersion 的 legacy 报告。 */
+export const CURRENT_REPORT_SCHEMA_VERSION = 1
+export type ReportSchemaVersion = 0 | 1
+
+/** 单次 attempt 的完整结果；CaseResult 顶层字段是最后一次 attempt 的兼容投影。 */
+export interface AttemptResult {
+  index: number
+  status: CaseStatus
+  failures: string[]
+  error?: string
+  turnEnd?: string
+  toolsCalled: string[]
+  toolCalls: ToolCallRecord[]
+  toolResults: ToolResultRecord[]
+  finalText: string
+  steps: number
+  tokens: TokenUsage
+  toolErrors: ToolError[]
+  events: number
+  skippedLines: number
+  exitCode?: number | null
+  timedOut?: boolean
+  stderrTail?: string
+  durationMs: number
+}
+
 /** 单条用例运行结果 */
 export interface CaseResult {
   name: string
@@ -138,18 +164,34 @@ export interface CaseResult {
   tokens: TokenUsage
   /** tool/result 的硬错误列表（无则为空数组） */
   toolErrors: ToolError[]
+  /** 成功解析的 session trace 事件帧数 */
+  events: number
+  /** collector 跳过的不良 JSONL 行数 */
+  skippedLines: number
+  /** dsh 子进程退出码；被信号终止时为 null，spawn 前失败时省略 */
+  exitCode?: number | null
+  /** dsh 子进程是否由单条用例 timeout 触发强制终止 */
+  timedOut?: boolean
+  /** dsh stderr 尾部（最多 8192 字符；空时省略） */
+  stderrTail?: string
   durationMs: number
   /** 实际执行的 attempt 次数（失败重跑生效时最多 retries+1；首跑即过为 1） */
   attempts: number
+  /** 每次 attempt 的完整结果，按执行顺序排列；schema 0/旧 schema 1 由 loader 合成单项历史。 */
+  attemptResults: AttemptResult[]
   /** 最终 pass 但中途有失败 attempt 时为 true（flaky 标记；其余情况省略） */
   flaky?: boolean
 }
 
 /** eval_run 产出的报告（写 <output_dir>/report.json） */
 export interface RunReport {
+  schemaVersion: ReportSchemaVersion
   tool: 'dsh-eval-harness'
   version: string
   startedAt: string
+  finishedAt: string
+  /** 整次 runEval 墙钟耗时（含 dsh 探针、用例加载、执行与报告生成前处理） */
+  durationMs: number
   profile: string
   cases: CaseResult[]
   summary: {

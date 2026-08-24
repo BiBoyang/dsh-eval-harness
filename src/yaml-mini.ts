@@ -13,7 +13,6 @@
  */
 export function parseYamlSubset(src: string): unknown {
   const lines = src.split(/\r?\n/)
-  const state = { i: 0 }
 
   function fail(no: number, msg: string): never {
     throw new Error(`line ${no}: ${msg}`)
@@ -260,7 +259,7 @@ export function parseYamlSubset(src: string): unknown {
         const [v, next] = parseNode(i, indent + 1)
         result.push(v)
         i = next
-      } else if (/^[^"'\[][^:]*:\s/.test(after) || /^[^"'\[][^:]*:$/.test(after)) {
+      } else if (/^[^"'[][^:]*:\s/.test(after) || /^[^"'[][^:]*:$/.test(after)) {
         // 序列项 map：`- key: value`。把 `- ` 改写为两个空格（map 内容列 = ind + 2），
         // 原地按 map 重解析本行及其续行；行号不变，错误定位不受影响。
         lines[j] = ' '.repeat(ind + 2) + after

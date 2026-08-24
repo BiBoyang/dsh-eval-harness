@@ -220,7 +220,7 @@ function formatErrorValue(error: unknown): string {
 }
 
 function truncate(s: string): string {
-  return s.length > TOOL_ERROR_MAX ? s.slice(0, TOOL_ERROR_MAX) + '…' : s
+  return s.length > TOOL_ERROR_MAX ? `${s.slice(0, TOOL_ERROR_MAX)}…` : s
 }
 
 /** zstd 帧魔数的字节形态（little-endian 0xFD2FB528 → `28 b5 2f fd`）。 */

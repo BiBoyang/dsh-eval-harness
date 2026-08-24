@@ -2,6 +2,40 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-08-24
+
+### Fixed
+
+- dsh 子进程非零退出不再可能判 PASS：trace 断言全过但进程 `exitCode !== 0` 时按
+  `error` 处理（错误消息附 stderr 尾部），走正常 `retries` 重跑逻辑；version probe
+  被信号杀死或非零退出时也会在跑用例前直接报错，不再拖到逐条用例失败。
+- 超时用例的部分 trace 采集现在同时带进程诊断字段（`exitCode` / `timedOut` /
+  `stderrTail`），排查超时原因不用再去翻子进程日志。
+
+### Added
+
+- report schema 版本化：`report.json` 写入 `schemaVersion: 1`。`eval_gate` 严格校验
+  当前 schema——未知未来 schema、重复用例名、非法状态、token 字段或 summary 不一致
+  一律以 `eval_gate: invalid report:` 前缀报错拒绝比较；未带 `schemaVersion` 的旧版
+  baseline 按 legacy schema 0 兼容读取，并为新增诊断字段补安全默认值。
+- `CaseResult` 新增 `attemptResults`（`AttemptResult[]`）：按执行顺序保存每次 attempt
+  的状态、断言失败、进程诊断、trace 摘要（events/skippedLines）、token 与耗时；顶层
+  字段继续表示最后一次 attempt，兼容现有 gate 与报告消费者。report.md 失败明细新增
+  exit code / timed out / stderr 行与「Attempt 历史」小节，汇总表新增 events/skipped
+  列与结束时间、总耗时。
+- CI：新增快速质量 workflow `.github/workflows/ci.yml`（push / PR 跑
+  `pnpm install --frozen-lockfile` + build + test + lint，无需真实 LLM 与 API key）。
+- `baseline/report.json` 更新为 schemaVersion 1 全量重跑结果（11 条全 PASS，人工复核通过）。
+
+### Changed
+
+- 用例口径：`cases/real/08-read-image.yml` 由刻意的负向用例转正——`tool_result_contains`
+  改为断言 `read_image` 成功结果文本含 `1x1`（此前硬编码期待「模型无视觉能力」报错文本，
+  在具备图像能力的模型上永远 FAIL）。视觉模型上应 PASS；无视觉模型上 `read_image` 报错，
+  `no_tool_errors` 与本断言同时 FAIL，回归拦截语义不变。
+- lint 收紧：`pnpm lint` 改为 `biome check --error-on-warnings`，存量 warning 清零；
+  `biome.json` 适配新版 `preset: "recommended"` 写法。
+
 ## [0.3.0] - 2026-08-15
 
 ### Added

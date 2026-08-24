@@ -112,6 +112,16 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 输出：JSON 文本（summary + 报告路径 + 各用例状态）。错误一律 throw
 `eval_run:` 前缀消息（找不到 dsh 可执行文件、用例解析失败等）。
 
+`report.json` 当前写入 `schemaVersion: 1`。`eval_gate` 会严格校验当前 schema；未带
+`schemaVersion` 的旧版 baseline 会按 legacy schema 0 兼容读取，并为新增的诊断字段补上
+安全默认值。未知的未来 schema、重复用例名、非法状态、token 字段或 summary 不一致都会以
+`eval_gate: invalid report:` 前缀报错，不会继续做门禁比较。
+
+每条新报告用例还会写入 `attemptResults`：按执行顺序保存每次重试的状态、断言失败、
+进程诊断、trace 摘要、token 与耗时；`CaseResult` 顶层字段继续表示最后一次 attempt，
+兼容现有 gate 与报告消费者。旧报告没有真实 attempt 历史时，loader 会合成一条单次记录，
+不会伪造旧报告不存在的重试信息。
+
 ### eval_gate
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
@@ -154,8 +164,10 @@ REGRESSION echo-hello: pass -> fail
 
 ## CI 集成
 
-真实 workflow 见 [.github/workflows/eval.yml](.github/workflows/eval.yml)：`pnpm build && pnpm test`
-后直调 `lib/runner.js` 的 `runEval` 跑 `cases/real/` 全量（真实 LLM，需仓库 secret
+快速质量 workflow 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)：每次 push / PR
+执行 `pnpm install --frozen-lockfile`、`pnpm build`、`pnpm test`、`pnpm lint`，不需要真实
+LLM 或 API key。真实 agent 回归 workflow 见 [.github/workflows/eval.yml](.github/workflows/eval.yml)：
+`pnpm build && pnpm test` 后直调 `lib/runner.js` 的 `runEval` 跑 `cases/real/` 全量（真实 LLM，需仓库 secret
 `DEEPSEEK_API_KEY`），再用 `lib/gate.js` 的 `computeGate` 对比 `baseline/report.json`，
 按 `EXIT_CODE` 拦截；report 作为 artifact 留存。用例或 harness 代码变更会触发重跑，
 另有每日定时跑（近 24h 无新 commit 则跳过）。
@@ -164,8 +176,7 @@ baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/upd
 Actions 页手动触发 → 全量重跑 → 覆盖 `baseline/report.json` 并开 PR（附报告摘要），
 人工复核后合并，不自动合入。
 
-`baseline/report.json` 已入库（首轮全量评测人工复核：`read-image` 在无视觉能力模型上
-预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate
+`baseline/report.json` 已入库（v0.3.1 全量重跑人工复核：11 条全 PASS；`read-image` 仅在无视觉能力的模型上预期 fail，见上）。用例/断言口径变更时须重跑全量、人工复核后更新 baseline，否则 gate
 会把口径变化判成 WARN/FAIL。
 
 ## session trace 说明
@@ -201,7 +212,7 @@ trace（残缺尾帧由 `decodeZstdLog` 恢复）写进 report，供排查超时
 pnpm install   # 安装 devDependencies（typescript / vitest / biome / @types/node）
 pnpm build     # tsc → lib/（含类型声明 lib/types/）
 pnpm test      # vitest run tests
-pnpm lint      # biome check（仅 lint，format 未启用）
+pnpm lint      # biome check --error-on-warnings（仅 lint，format 未启用）
 ```
 
 ## 插件管理
