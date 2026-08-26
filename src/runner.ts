@@ -439,19 +439,20 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     // 并发共享根会让 findSessionFile 错捡别的用例的 session
     const dirName = `${String(index).padStart(3, '0')}-${slugify(evalCase.name)}`
     const workspace = join(workspaceBase, dirName)
-    const sessionRoot = join(sessionBase, dirName)
-    const overlayPath = join(outputDir, `eval-overlay-${dirName}.patch.yml`)
     await mkdir(workspace, { recursive: true })
-    await mkdir(sessionRoot, { recursive: true })
-    await writeFile(overlayPath, buildOverlayYaml(sessionRoot))
 
     /** 单次 attempt：失败/错误（含超时）返回非 pass 状态，由外层决定是否重跑 */
-    const runAttempt = async (): Promise<Omit<AttemptResult, 'index'>> => {
+    const runAttempt = async (attemptIndex: number): Promise<Omit<AttemptResult, 'index'>> => {
       // 每次 attempt 前清空重建 workspace：上一次 attempt 的 fs 副作用（agent 落的
-      // 文件、缓存）会让重跑假通过；session 根复用，findSessionFile 按 attempt
-      // 起点过滤（sinceMs），只采集本次 attempt 的 trace
+      // 文件、缓存）会让重跑假通过。session 根与 overlay 也按 attempt 独立——不再靠
+      // wall-clock 时间窗隔离不同 attempt 的 trace（被 kill 的进程延迟落盘可能越过
+      // 时间窗边界）；sinceMs 保留为第二道防线，但隔离不再依赖它
       await rm(workspace, { recursive: true, force: true })
       await mkdir(workspace, { recursive: true })
+      const sessionRoot = join(sessionBase, dirName, `attempt-${String(attemptIndex)}`)
+      const overlayPath = join(outputDir, `eval-overlay-${dirName}-a${String(attemptIndex)}.patch.yml`)
+      await mkdir(sessionRoot, { recursive: true })
+      await writeFile(overlayPath, buildOverlayYaml(sessionRoot))
       const startedAt = Date.now()
       const base: Omit<AttemptResult, 'index' | 'status' | 'durationMs'> = {
         failures: [],
@@ -546,11 +547,11 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     const trials = evalCase.trials ?? trialsDefault
     const totalStartedAt = Date.now()
     const attemptResults: AttemptResult[] = []
-    let result = await runAttempt()
+    let result = await runAttempt(1)
     attemptResults.push({ ...result, index: 1 })
     if (trials > 1) {
       while (attemptResults.length < trials) {
-        result = await runAttempt()
+        result = await runAttempt(attemptResults.length + 1)
         attemptResults.push({ ...result, index: attemptResults.length + 1 })
       }
       // 可靠性模式的状态语义与 retries 对齐：任一 trial 通过即 pass；
@@ -571,7 +572,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       }
     }
     while (result.status !== 'pass' && attemptResults.length <= retries) {
-      result = await runAttempt()
+      result = await runAttempt(attemptResults.length + 1)
       attemptResults.push({ ...result, index: attemptResults.length + 1 })
     }
     return {

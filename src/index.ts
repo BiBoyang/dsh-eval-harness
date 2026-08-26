@@ -137,6 +137,11 @@ export function apply(ctx: Context): void {
           default: 50,
           description: 'Token total (input+output+reasoning) increase threshold in percent: an unchanged-status case exceeding it counts as a token regression (WARN). Default 50; 0 disables.',
         },
+        min_trial_success_rate: {
+          type: 'number',
+          description:
+            'Reliability gate for trials cases (0-1, off by default): a case with a reliability block is WARNed when the one-sided 95% Wilson lower bound of its successRate falls below this value. Judges the lower bound, not the point estimate.',
+        },
       },
       output: { schema: { type: 'string' }, render: renderJsonText },
       execute: async (args) => {
@@ -145,6 +150,7 @@ export function apply(ctx: Context): void {
         if (!after) throw new Error('eval_gate: current report is missing')
         const report = computeGate(before, after, args.strict === true, {
           maxTokenIncreasePct: typeof args.max_token_increase_pct === 'number' ? args.max_token_increase_pct : undefined,
+          minTrialSuccessRate: typeof args.min_trial_success_rate === 'number' ? args.min_trial_success_rate : undefined,
         })
         return args.gate_json === true ? renderGateJson(report) : renderGateText(report)
       },

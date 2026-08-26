@@ -348,6 +348,60 @@ describe('computeGate dsh version change', () => {
   })
 })
 
+describe('computeGate reliability gate (minTrialSuccessRate)', () => {
+  const withReliability = (name: string, passes: number, trials: number): CaseResult => ({
+    ...caseResult(name, 'pass'),
+    reliability: { trials, passes, successRate: passes / trials, passAtK: 1, passPowK: 1, k: 1 },
+  })
+
+  it('is off by default: unreliable case stays PASS without the option', () => {
+    // 10 次过 9 次：点估计 0.9，单侧 Wilson 下界约 0.65——不设阈值时门禁不消费尺子
+    const g = computeGate(report([caseResult('a', 'pass')]), report([withReliability('a', 9, 10)]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.unreliableCases).toEqual([])
+  })
+
+  it('WARN when the Wilson lower bound falls below the threshold (not the point estimate)', () => {
+    const before = report([caseResult('a', 'pass')])
+    const after = report([withReliability('a', 9, 10)])
+    const g = computeGate(before, after, false, { minTrialSuccessRate: 0.8 })
+    expect(g.verdict).toBe('WARN')
+    expect(g.unreliableCases).toHaveLength(1)
+    expect(g.unreliableCases[0]?.name).toBe('a')
+    expect(g.unreliableCases[0]?.successRate).toBeCloseTo(0.9)
+    expect(g.unreliableCases[0]?.lowerBound).toBeCloseTo(0.65, 1)
+    expect(g.reasons.some((r) => r.includes('unreliable case: a'))).toBe(true)
+  })
+
+  it('PASS when the lower bound clears the threshold', () => {
+    // n=100, 96 过：下界约 0.91，过 0.8 阈值
+    const g = computeGate(report([caseResult('a', 'pass')]), report([withReliability('a', 96, 100)]), false, {
+      minTrialSuccessRate: 0.8,
+    })
+    expect(g.verdict).toBe('PASS')
+    expect(g.unreliableCases).toEqual([])
+  })
+
+  it('ignores cases without a reliability block and validates the threshold', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), report([caseResult('a', 'pass')]), false, {
+      minTrialSuccessRate: 0.9,
+    })
+    expect(g.verdict).toBe('PASS')
+    expect(() =>
+      computeGate(report([caseResult('a', 'pass')]), report([caseResult('a', 'pass')]), false, { minTrialSuccessRate: 1.5 }),
+    ).toThrow(/min_trial_success_rate must be in \[0, 1\]/)
+  })
+
+  it('text output has UNRELIABLE count and detail lines', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), report([withReliability('a', 9, 10)]), false, {
+      minTrialSuccessRate: 0.8,
+    })
+    const text = renderGateText(g)
+    expect(text).toContain('UNRELIABLE=1')
+    expect(text).toContain('UNRELIABLE_CASE a: successRate 0.90')
+  })
+})
+
 describe('gateExitCode', () => {
   it('maps verdicts per protocol', () => {
     expect(gateExitCode('PASS', false)).toBe(0)

@@ -129,9 +129,10 @@ flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不�
 排障时可直接区分「dsh 变了」还是「模型变了」。
 
 `trials > 1` 的用例额外写入 `reliability`：`successRate`（单次成功率）、`passAtK`
-（无偏估计 1−C(n−c,k)/C(n,k)，不用小 n 下有偏的 naive 公式）、`passPowK`（(c/n)^k）；
-report.md 用例表新增「可靠性 (trials)」列。可靠性目前只做测量展示，不进门禁——
-阈值等数据攒起来再定。
+（无偏估计 1−C(n−c,k)/C(n,k)）、`passPowK`（无偏估计 C(c,k)/C(n,k)；不用 plug-in 的
+(c/n)^k——x^k 上凸，Jensen 不等式保证它向上偏）；
+report.md 用例表新增「可靠性 (trials)」列。可靠性默认只做测量展示；需要进门禁时用
+`eval_gate` 的 `min_trial_success_rate`（见下）。
 
 ### eval_judge_validate
 
@@ -175,6 +176,7 @@ TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡
 | `strict` | boolean | 否 | `false` | strict 模式下 WARN 退出码为 2 |
 | `gate_json` | boolean | 否 | `false` | true 时输出单条 JSON（供 CI 解析），否则 key=value 文本 |
 | `max_token_increase_pct` | integer | 否 | `50` | token total（与 max_tokens 同口径）涨幅阈值百分比：状态不变的用例超阈值记 token 回归（WARN）；0 关闭 |
+| `min_trial_success_rate` | number | 否 | 关闭 | trials 可靠性门槛（0-1）：带 reliability 的用例若 successRate 的**单侧 95% Wilson 下界**低于该值记 WARN——判下界不判点估计；缺省关闭，保留「trials 只测量」语义 |
 
 ## gate 协议
 
@@ -189,6 +191,7 @@ TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡
 | 新增 flaky 用例（重跑后才过）较 baseline 增多；baseline 已有 flaky 不重复告警 | `WARN` | 0（strict 为 2） |
 | pass 但带工具硬错误的用例（agent 自我纠正）较 baseline 新增 | `WARN` | 0（strict 为 2） |
 | 同一 stderr 错误签名跨用例/跨 attempt 出现 ≥2 次（崩在同一处，疑似共享态事故） | `WARN` | 0（strict 为 2） |
+| 开启 `min_trial_success_rate` 时：trials 用例 successRate 的单侧 95% Wilson 下界低于阈值 | `WARN` | 0（strict 为 2） |
 | dsh 版本较 baseline 变化 | 仅 informational reason + `DSH_VERSION_CHANGED` 行，不影响判定 | - |
 | 全部与 baseline 一致 | `PASS` | 0 |
 | 无 baseline | `N/A` | 2 |
@@ -210,6 +213,7 @@ FLAKY=0
 TOOL_ERROR_RECOVERIES=0
 REPEATED_ERROR_SIGNATURES=0
 BASELINE_FLAKY=0
+UNRELIABLE=0
 REASON regression: echo-hello pass -> fail
 REGRESSION echo-hello: pass -> fail
 ```

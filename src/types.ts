@@ -264,6 +264,8 @@ export interface GateReport {
   repeatedErrorSignatures: ErrorSignatureGroup[]
   /** dsh 版本较 baseline 变化（informational：跨版本结果不可直接比，但不影响判定） */
   dshVersionChange?: { before: string; after: string }
+  /** 可靠性不达标的 trials 用例（仅当 gate 开启 minTrialSuccessRate 时产生） */
+  unreliableCases: GateUnreliableCase[]
 }
 
 /** stderr 错误签名聚合分组（extractErrorSignature 的产物，跨用例/跨 attempt） */
@@ -290,4 +292,14 @@ export interface GateTokenDiff {
   after: number
   /** 涨幅百分比（(after-before)/before*100，取整） */
   increasePct: number
+}
+
+/** trials 可靠性不达标的用例（successRate 的单侧 95% Wilson 下界低于阈值） */
+export interface GateUnreliableCase {
+  name: string
+  /** 观测单次成功率 passes/trials */
+  successRate: number
+  /** 单侧 95% Wilson 下置信界——门禁判的是它，不是点估计 */
+  lowerBound: number
+  trials: number
 }

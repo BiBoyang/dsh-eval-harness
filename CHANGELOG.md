@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `passPowK` 改用无偏组合估计 C(c,k)/C(n,k)（旧版为 plug-in (c/n)^k：x^k 上凸，
+  Jensen 不等式保证向上偏，如 n=3,c=2,k=2 时旧值 4/9 vs 无偏 1/3）——与 pass@k
+  的估计口径对齐。**口径变化**：新旧报告的 passPowK 数值不可直接比。
+- 每次 attempt 使用独立的 session 根与 overlay（`.sessions/<用例>/attempt-<N>`）：
+  不再靠 wall-clock 时间窗（sinceMs）隔离不同 attempt 的 trace——被 kill 进程的
+  延迟落盘可能越过时间窗边界；sinceMs 过滤保留为第二道防线。
+
 ### Added
 
 - 可靠性测量（trials / pass@k / pass^k）：用例 yaml 新增 `trials`（正整数，缺省用
@@ -46,6 +55,12 @@
   - 端到端验证锚点：以 `.eval/v0.3.2-candidate` → `v0.3.2-candidate2` 的历史报告
     跑 gate，可自动报出 `ENOENT@ensureSymlink` 聚合签名、2 条新 flaky 与版本切换——
     即 #4312 若发生在本版本之后，门禁会自己喊出来。
+- gate 新增 trials 可靠性门禁（`eval_gate` 参数 `min_trial_success_rate`，0-1，
+  缺省关闭）：带 reliability 的用例若 successRate 的**单侧 95% Wilson 下界**低于
+  阈值记 WARN（`unreliableCases`；文本输出 `UNRELIABLE` / `UNRELIABLE_CASE` 行）。
+  判下界不判点估计（「成功率不低于阈值」是单侧问题）；默认关闭以保留「trials
+  只测量」语义，strict 模式下 WARN 退出码为 2 即硬门槛。设计理由见
+  `docs/gate-signals.md` 第 5 节。
 
 ### Changed
 

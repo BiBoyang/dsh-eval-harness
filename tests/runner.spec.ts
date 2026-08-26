@@ -453,8 +453,8 @@ describe('runEval retries (flaky 治理)', () => {
 
   /**
    * fake dsh：--version 探针通过；正常调用按 overlay root 落 session.jsonl。
-   * 跨 attempt 状态记在 session 根下的 .attempts 计数文件（session 根跨 attempt
-   * 复用；workspace 每次 attempt 被 runner 清空重建，状态不能放那边）。
+   * session 根按 attempt 独立（<case>/attempt-N），跨 attempt 状态记在上一级的
+   * .attempts 计数文件（workspace 每次 attempt 被 runner 清空重建，状态不能放那边）。
    * - passFrom：第 N 个 attempt 起落带 bash 调用的过测 trace，之前落无工具调用的
    *   fail trace；
    * - hangBeforePass：未过测的 attempt 落 trace 后睡死（模拟超时 error 触发重跑）；
@@ -472,7 +472,7 @@ describe('runEval retries (flaky 治理)', () => {
       'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
       'dir="$root/case/session-fake"',
       'mkdir -p "$dir"',
-      'state="$root/.attempts"',
+      'state="$(dirname "$root")/.attempts"',
       'n=0',
       '[ -f "$state" ] && n=$(cat "$state")',
       'n=$((n + 1))',
@@ -629,7 +629,7 @@ describe('runEval trials (可靠性测量)', () => {
       'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
       'dir="$root/case/session-fake"',
       'mkdir -p "$dir"',
-      'state="$root/.attempts"',
+      'state="$(dirname "$root")/.attempts"',
       'n=0',
       '[ -f "$state" ] && n=$(cat "$state")',
       'n=$((n + 1))',
@@ -662,13 +662,13 @@ describe('runEval trials (可靠性测量)', () => {
     expect(c.attemptResults.map((a) => a.status)).toEqual(['fail', 'pass', 'pass'])
     // 部分通过即标 flaky（与「重跑后才过」同义：结果不是一次命中的）
     expect(c.flaky).toBe(true)
-    // n=3 c=2 k=2：pass@2 = 1 - C(1,2)/C(3,2) = 1；pass^2 = (2/3)^2
+    // n=3 c=2 k=2：pass@2 = 1 - C(1,2)/C(3,2) = 1；pass^2 = C(2,2)/C(3,2) = 1/3
     expect(c.reliability).toBeDefined()
     expect(c.reliability?.trials).toBe(3)
     expect(c.reliability?.passes).toBe(2)
     expect(c.reliability?.successRate).toBeCloseTo(2 / 3)
     expect(c.reliability?.passAtK).toBe(1)
-    expect(c.reliability?.passPowK).toBeCloseTo(4 / 9)
+    expect(c.reliability?.passPowK).toBeCloseTo(1 / 3)
   }, 15_000)
 
   it('keeps single-run cases free of the reliability block', async () => {

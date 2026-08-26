@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
-import type { AttemptResult, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateVerdict, RunReport, TokenUsage } from './types.js'
+import { wilsonLowerBoundOneSided95 } from './reliability.js'
+import type { AttemptResult, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateUnreliableCase, GateVerdict, RunReport, TokenUsage } from './types.js'
 import { CURRENT_REPORT_SCHEMA_VERSION } from './types.js'
 
 /** gate 视角的归一化状态：error 按 fail 处理 */
@@ -28,6 +29,12 @@ export interface GateOptions {
    * 状态不变的用例超过该涨幅记 token 回归（WARN）。默认 50；0 关闭。
    */
   maxTokenIncreasePct?: number
+  /**
+   * trials 可靠性门槛（0-1，缺省关闭）：带 reliability 的用例若 successRate 的
+   * 单侧 95% Wilson 下界低于该值，记 WARN。判下界不判点估计——「成功率不低于
+   * 阈值」是单侧问题；默认关闭以保留「trials 只测量不门禁」的语义。
+   */
+  minTrialSuccessRate?: number
 }
 
 /** 默认 token 涨幅阈值（百分比）；0 = 关闭 token 回归检测 */
@@ -44,6 +51,8 @@ export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
  * - 新增 flaky 用例（较 baseline 增多；baseline 已有的不重复告警）→ WARN
  * - pass 但带工具硬错误的用例较 baseline 新增（agent 自我纠正了工具错误）→ WARN
  * - 同一 stderr 错误签名出现 >= 2 次（崩在同一处，疑似共享态事故）→ WARN
+ * - 开启 minTrialSuccessRate 时：trials 用例的 successRate 单侧 95% Wilson 下界低于阈值 → WARN
+ *   （尺子的读数进门禁；默认关闭，保留「trials 只测量」语义）
  * - dsh 版本较 baseline 变化 → 仅 informational reason，不影响判定（跨版本结果不可直接比，
  *   但版本切换是高频合法事件，WARN 要留给「证据表明有问题」）
  * - 完全一致 → PASS
@@ -65,6 +74,7 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     baselineFlakyCases: [],
     toolErrorRecoveries: [],
     repeatedErrorSignatures: [],
+    unreliableCases: [],
   }
   if (!before) {
     return { ...base, verdict: 'N/A', exitCode: gateExitCode('N/A', strict), reasons: ['no baseline report; gate not applicable'] }
@@ -127,6 +137,22 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   // （上游并发竞态、环境损坏）。接受与 flaky 信号对同一事故「双倍计票」——
   // flaky 说「有抖动」，签名聚合说「抖在同一处，去查共享态」。
   base.repeatedErrorSignatures = aggregateErrorSignatures(after).filter((g) => g.occurrences >= REPEATED_SIGNATURE_THRESHOLD)
+  // 可靠性门禁（默认关闭）：尺子的读数只有被门禁消费才不是摆设。判 Wilson 下界
+  // 不判点估计——10 次过 9 次的点估计 0.9，单侧 95% 下界只有约 0.65，小样本不配谈达标
+  const minTrialSuccessRate = options.minTrialSuccessRate
+  if (minTrialSuccessRate !== undefined) {
+    if (!Number.isFinite(minTrialSuccessRate) || minTrialSuccessRate < 0 || minTrialSuccessRate > 1) {
+      throw new Error(`eval_gate: min_trial_success_rate must be in [0, 1], got ${minTrialSuccessRate}`)
+    }
+    for (const c of after.cases) {
+      if (c.reliability === undefined) continue
+      const lowerBound = wilsonLowerBoundOneSided95(c.reliability.passes, c.reliability.trials)
+      if (lowerBound < minTrialSuccessRate) {
+        const entry: GateUnreliableCase = { name: c.name, successRate: c.reliability.successRate, lowerBound, trials: c.reliability.trials }
+        base.unreliableCases.push(entry)
+      }
+    }
+  }
   if (before.dshVersion !== undefined && after.dshVersion !== undefined && before.dshVersion !== after.dshVersion) {
     base.dshVersionChange = { before: before.dshVersion, after: after.dshVersion }
   }
@@ -144,7 +170,8 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     base.skippedLineIncreases.length > 0 ||
     base.flakyCases.length > 0 ||
     base.toolErrorRecoveries.length > 0 ||
-    base.repeatedErrorSignatures.length > 0
+    base.repeatedErrorSignatures.length > 0 ||
+    base.unreliableCases.length > 0
   ) {
     verdict = 'WARN'
     for (const d of base.improvements) base.reasons.push(`improvement: ${d.name} fail -> pass`)
@@ -168,6 +195,9 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   }
   for (const g of base.repeatedErrorSignatures) {
     base.reasons.push(`repeated error signature: ${g.signature} x${g.occurrences} across [${g.cases.join(', ')}] (shared-state suspect)`)
+  }
+  for (const u of base.unreliableCases) {
+    base.reasons.push(`unreliable case: ${u.name} successRate ${u.successRate.toFixed(2)} (Wilson lower ${u.lowerBound.toFixed(2)}, n=${u.trials}) below gate threshold`)
   }
   // informational：不影响判定。版本切换是高频合法事件，但跨版本结果不可直接比，
   // 且升版后首跑是上游共享态重建（如 profile 目录 heal）的高危时刻，必须留痕。
@@ -198,6 +228,7 @@ export function renderGateText(report: GateReport): string {
     `TOOL_ERROR_RECOVERIES=${report.toolErrorRecoveries.length}`,
     `REPEATED_ERROR_SIGNATURES=${report.repeatedErrorSignatures.length}`,
     `BASELINE_FLAKY=${report.baselineFlakyCases.length}`,
+    `UNRELIABLE=${report.unreliableCases.length}`,
     ...(report.dshVersionChange === undefined ? [] : [`DSH_VERSION_CHANGED=${report.dshVersionChange.before} -> ${report.dshVersionChange.after}`]),
   ]
   for (const r of report.reasons) lines.push(`REASON ${r}`)
@@ -209,6 +240,7 @@ export function renderGateText(report: GateReport): string {
   for (const n of report.flakyCases) lines.push(`FLAKY_CASE ${n}`)
   for (const n of report.toolErrorRecoveries) lines.push(`TOOL_ERROR_RECOVERY ${n}`)
   for (const g of report.repeatedErrorSignatures) lines.push(`ERROR_SIGNATURE ${g.signature}: x${g.occurrences} across [${g.cases.join(', ')}]`)
+  for (const u of report.unreliableCases) lines.push(`UNRELIABLE_CASE ${u.name}: successRate ${u.successRate.toFixed(2)} (Wilson lower ${u.lowerBound.toFixed(2)}, n=${u.trials})`)
   return lines.join('\n')
 }
 
