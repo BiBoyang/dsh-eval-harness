@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
 import type { AttemptResult, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateVerdict, RunReport, TokenUsage } from './types.js'
 import { CURRENT_REPORT_SCHEMA_VERSION } from './types.js'
 
@@ -40,6 +41,11 @@ export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
  * - 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除）→ WARN
  * - 状态不变但 token total 涨幅超阈值（默认 +50%）→ WARN
  * - skippedLines 较 baseline 增长（trace 解析漏帧增多）→ WARN
+ * - 新增 flaky 用例（较 baseline 增多；baseline 已有的不重复告警）→ WARN
+ * - pass 但带工具硬错误的用例较 baseline 新增（agent 自我纠正了工具错误）→ WARN
+ * - 同一 stderr 错误签名出现 >= 2 次（崩在同一处，疑似共享态事故）→ WARN
+ * - dsh 版本较 baseline 变化 → 仅 informational reason，不影响判定（跨版本结果不可直接比，
+ *   但版本切换是高频合法事件，WARN 要留给「证据表明有问题」）
  * - 完全一致 → PASS
  * - before 为 null（无 baseline）→ N/A
  */
@@ -55,6 +61,10 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     removed: [],
     tokenRegressions: [],
     skippedLineIncreases: [],
+    flakyCases: [],
+    baselineFlakyCases: [],
+    toolErrorRecoveries: [],
+    repeatedErrorSignatures: [],
   }
   if (!before) {
     return { ...base, verdict: 'N/A', exitCode: gateExitCode('N/A', strict), reasons: ['no baseline report; gate not applicable'] }
@@ -102,12 +112,40 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     if (!afterMap.has(name)) base.removed.push(name)
   }
 
+  // flaky：较 baseline 增多才告警——baseline 里已知的抖动用例不重复 WARN（告警疲劳会把
+  // WARN 信号磨平）；代价是新 flaky 若被收编进 baseline 就会哑掉，故另有
+  // baselineFlakyCases 提示约束「flaky 不收编进 baseline」。
+  const beforeFlaky = new Set(before.cases.filter((c) => c.flaky === true).map((c) => c.name))
+  base.flakyCases = after.cases.filter((c) => c.flaky === true && !beforeFlaky.has(c.name)).map((c) => c.name)
+  base.baselineFlakyCases = before.cases.filter((c) => c.flaky === true).map((c) => c.name)
+  // 工具错误自我纠正：pass 但 toolErrors 非空，说明 agent 吞掉/绕过了工具硬错误——
+  // 最终文本可能完全正常，但链路并不干净。同样按较 baseline 增多告警。
+  const recovered = (c: CaseResult): boolean => c.status === 'pass' && c.toolErrors.length > 0
+  const beforeRecovered = new Set(before.cases.filter(recovered).map((c) => c.name))
+  base.toolErrorRecoveries = after.cases.filter((c) => recovered(c) && !beforeRecovered.has(c.name)).map((c) => c.name)
+  // 同一 stderr 签名跨用例/跨 attempt 反复出现：大概率不是用例的问题，而是共享态
+  // （上游并发竞态、环境损坏）。接受与 flaky 信号对同一事故「双倍计票」——
+  // flaky 说「有抖动」，签名聚合说「抖在同一处，去查共享态」。
+  base.repeatedErrorSignatures = aggregateErrorSignatures(after).filter((g) => g.occurrences >= REPEATED_SIGNATURE_THRESHOLD)
+  if (before.dshVersion !== undefined && after.dshVersion !== undefined && before.dshVersion !== after.dshVersion) {
+    base.dshVersionChange = { before: before.dshVersion, after: after.dshVersion }
+  }
+
   let verdict: GateVerdict
   if (base.regressions.length > 0 || base.newFailures.length > 0) {
     verdict = 'FAIL'
     for (const d of base.regressions) base.reasons.push(`regression: ${d.name} pass -> ${d.after}`)
     for (const d of base.newFailures) base.reasons.push(`new failing case: ${d.name}`)
-  } else if (base.improvements.length > 0 || base.added.length > 0 || base.removed.length > 0 || base.tokenRegressions.length > 0 || base.skippedLineIncreases.length > 0) {
+  } else if (
+    base.improvements.length > 0 ||
+    base.added.length > 0 ||
+    base.removed.length > 0 ||
+    base.tokenRegressions.length > 0 ||
+    base.skippedLineIncreases.length > 0 ||
+    base.flakyCases.length > 0 ||
+    base.toolErrorRecoveries.length > 0 ||
+    base.repeatedErrorSignatures.length > 0
+  ) {
     verdict = 'WARN'
     for (const d of base.improvements) base.reasons.push(`improvement: ${d.name} fail -> pass`)
     for (const n of base.added) base.reasons.push(`added passing case: ${n}`)
@@ -121,6 +159,23 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   }
   for (const d of base.skippedLineIncreases) {
     base.reasons.push(`skipped lines increase: ${d.name} ${d.before} -> ${d.after}`)
+  }
+  for (const n of base.flakyCases) {
+    base.reasons.push(`new flaky case: ${n} (passed only after retry; investigate the first-attempt failure)`)
+  }
+  for (const n of base.toolErrorRecoveries) {
+    base.reasons.push(`tool error recovered: ${n} (pass with tool hard error(s) the agent worked around)`)
+  }
+  for (const g of base.repeatedErrorSignatures) {
+    base.reasons.push(`repeated error signature: ${g.signature} x${g.occurrences} across [${g.cases.join(', ')}] (shared-state suspect)`)
+  }
+  // informational：不影响判定。版本切换是高频合法事件，但跨版本结果不可直接比，
+  // 且升版后首跑是上游共享态重建（如 profile 目录 heal）的高危时刻，必须留痕。
+  if (base.dshVersionChange !== undefined) {
+    base.reasons.push(`dsh version changed: ${base.dshVersionChange.before} -> ${base.dshVersionChange.after} (results not directly comparable)`)
+  }
+  if (base.baselineFlakyCases.length > 0) {
+    base.reasons.push(`baseline contains ${base.baselineFlakyCases.length} flaky case(s): [${base.baselineFlakyCases.join(', ')}] (do not accept flaky cases into baseline)`)
   }
 
   return { ...base, verdict, exitCode: gateExitCode(verdict, strict) }
@@ -139,6 +194,11 @@ export function renderGateText(report: GateReport): string {
     `REMOVED=${report.removed.length}`,
     `TOKEN_REGRESSIONS=${report.tokenRegressions.length}`,
     `SKIPPED_LINE_INCREASES=${report.skippedLineIncreases.length}`,
+    `FLAKY=${report.flakyCases.length}`,
+    `TOOL_ERROR_RECOVERIES=${report.toolErrorRecoveries.length}`,
+    `REPEATED_ERROR_SIGNATURES=${report.repeatedErrorSignatures.length}`,
+    `BASELINE_FLAKY=${report.baselineFlakyCases.length}`,
+    ...(report.dshVersionChange === undefined ? [] : [`DSH_VERSION_CHANGED=${report.dshVersionChange.before} -> ${report.dshVersionChange.after}`]),
   ]
   for (const r of report.reasons) lines.push(`REASON ${r}`)
   for (const d of report.regressions) lines.push(`REGRESSION ${d.name}: ${d.before} -> ${d.after}`)
@@ -146,6 +206,9 @@ export function renderGateText(report: GateReport): string {
   for (const d of report.improvements) lines.push(`IMPROVEMENT ${d.name}: ${d.before} -> ${d.after}`)
   for (const d of report.tokenRegressions) lines.push(`TOKEN_REGRESSION ${d.name}: total ${d.before} -> ${d.after} (+${d.increasePct}%)`)
   for (const d of report.skippedLineIncreases) lines.push(`SKIPPED_LINE_INCREASE ${d.name}: ${d.before} -> ${d.after}`)
+  for (const n of report.flakyCases) lines.push(`FLAKY_CASE ${n}`)
+  for (const n of report.toolErrorRecoveries) lines.push(`TOOL_ERROR_RECOVERY ${n}`)
+  for (const g of report.repeatedErrorSignatures) lines.push(`ERROR_SIGNATURE ${g.signature}: x${g.occurrences} across [${g.cases.join(', ')}]`)
   return lines.join('\n')
 }
 

@@ -93,6 +93,10 @@ assert:
 3. 回归时 `eval_gate`：`before` 指 baseline、`after` 指本次 report.json；
    文本输出 `OVERALL=PASS|WARN|FAIL|N/A`，`gate_json=true` 输出单条 JSON 供 CI 解析；
    `max_token_increase_pct`（默认 50，0 关闭）控制 token 涨幅回归判定（WARN）。
+   gate 另有几路软信号（均较 baseline 增多才 WARN，防告警疲劳）：新增 flaky 用例、
+   pass 但带工具硬错误的用例、同一 stderr 错误签名出现 ≥2 次（崩在同一处，
+   疑似共享态事故）；dsh 版本切换只留 informational 痕迹（`DSH_VERSION_CHANGED` 行）。
+   设计理由见 `docs/gate-signals.md`；纪律：flaky 用例不收编进 baseline。
 
 ## 解析约束（重要）
 

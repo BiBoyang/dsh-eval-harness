@@ -27,6 +27,25 @@
 - gate 新增 skippedLines 回归告警：用例 `skippedLines` 较 baseline 增长（trace 解析
   漏帧增多，断言可能基于残缺数据通过）记 WARN；文本输出新增 `SKIPPED_LINE_INCREASES` /
   `SKIPPED_LINE_INCREASE` 行，JSON 新增 `skippedLineIncreases` 字段。
+- gate 新增四路「软信号」，把抓上游并发 bug（deepseek-harness Discussions #4312）
+  过程中的人肉环节固化成自动告警（设计理由与权衡见 `docs/gate-signals.md`）：
+  - flaky 门禁级告警：新增 flaky 用例（重跑后才过）较 baseline 增多记 WARN；
+    baseline 残留的 flaky 用例以 `baselineFlakyCases` 提示（纪律：flaky 不收编进
+    baseline）。文本输出 `FLAKY` / `FLAKY_CASE` 行。
+  - 工具错误自我纠正告警：pass 但 `toolErrors` 非空（agent 吞掉/绕过工具硬错误）
+    的用例较 baseline 新增记 WARN。文本输出 `TOOL_ERROR_RECOVERIES` /
+    `TOOL_ERROR_RECOVERY` 行。
+  - stderr 错误签名聚合：新增 `src/error-signature.ts`，从失败 attempt 的
+    `stderrTail` 提取 `<错误码>@<栈顶应用帧函数>` 签名并跨用例/跨 attempt 聚合，
+    同一签名 ≥2 次记 WARN（「崩在同一处」的共享态事故信号）且 report.md 出
+    「错误签名聚合」小节。文本输出 `REPEATED_ERROR_SIGNATURES` / `ERROR_SIGNATURE` 行。
+  - dsh 版本切换提示：`dshVersion` 较 baseline 变化时输出 informational reason 与
+    `DSH_VERSION_CHANGED=X -> Y` 行（不影响判定——跨版本结果不可直接比，但版本
+    切换是高频合法事件）。
+  - report.md 汇总行在存在 flaky 用例时附 flaky 计数。
+  - 端到端验证锚点：以 `.eval/v0.3.2-candidate` → `v0.3.2-candidate2` 的历史报告
+    跑 gate，可自动报出 `ENOENT@ensureSymlink` 聚合签名、2 条新 flaky 与版本切换——
+    即 #4312 若发生在本版本之后，门禁会自己喊出来。
 
 ### Changed
 

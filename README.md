@@ -178,7 +178,7 @@ TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡
 
 ## gate 协议
 
-判定规则（优先级从高到低）：
+判定规则（优先级从高到低；软信号的设计理由见 [docs/gate-signals.md](docs/gate-signals.md)）：
 
 | 条件 | 判定 | 退出码 |
 | --- | --- | --- |
@@ -186,6 +186,10 @@ TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡
 | 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除） | `WARN` | 0（strict 为 2） |
 | 状态不变但 token total 涨幅超阈值（默认 +50%，`max_token_increase_pct` 可调，0 关闭） | `WARN` | 0（strict 为 2） |
 | `skippedLines` 较 baseline 增长（trace 解析漏帧增多，断言可能基于残缺数据） | `WARN` | 0（strict 为 2） |
+| 新增 flaky 用例（重跑后才过）较 baseline 增多；baseline 已有 flaky 不重复告警 | `WARN` | 0（strict 为 2） |
+| pass 但带工具硬错误的用例（agent 自我纠正）较 baseline 新增 | `WARN` | 0（strict 为 2） |
+| 同一 stderr 错误签名跨用例/跨 attempt 出现 ≥2 次（崩在同一处，疑似共享态事故） | `WARN` | 0（strict 为 2） |
+| dsh 版本较 baseline 变化 | 仅 informational reason + `DSH_VERSION_CHANGED` 行，不影响判定 | - |
 | 全部与 baseline 一致 | `PASS` | 0 |
 | 无 baseline | `N/A` | 2 |
 
@@ -202,6 +206,10 @@ ADDED=0
 REMOVED=0
 TOKEN_REGRESSIONS=0
 SKIPPED_LINE_INCREASES=0
+FLAKY=0
+TOOL_ERROR_RECOVERIES=0
+REPEATED_ERROR_SIGNATURES=0
+BASELINE_FLAKY=0
 REASON regression: echo-hello pass -> fail
 REGRESSION echo-hello: pass -> fail
 ```

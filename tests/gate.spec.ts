@@ -228,6 +228,126 @@ describe('computeGate skippedLines increases', () => {
   })
 })
 
+describe('computeGate flaky signals', () => {
+  const CRASH = "Error: ENOENT: no such file or directory, readlink '/x'\n    at readlinkSync (node:fs:1761:18)\n    at ensureSymlink (file:///app/lib/index.js:380:7)\n"
+
+  const flakyCase = (name: string, stderrTail?: string): CaseResult => {
+    const base = caseResult(name, 'pass')
+    const errorAttempt = { ...caseResult(name, 'error').attemptResults[0], ...(stderrTail === undefined ? {} : { stderrTail }) }
+    return { ...base, attempts: 2, flaky: true, attemptResults: [errorAttempt, { ...base.attemptResults[0], index: 2 }] }
+  }
+
+  it('WARN when flaky cases increase vs baseline', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), report([flakyCase('a')]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.flakyCases).toEqual(['a'])
+    expect(g.reasons.some((r) => r.includes('new flaky case: a'))).toBe(true)
+  })
+
+  it('PASS when the same case is flaky in baseline (no repeated alarm)', () => {
+    const g = computeGate(report([flakyCase('a')]), report([flakyCase('a')]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.flakyCases).toEqual([])
+    // baseline hygiene 提示：flaky 不该收编进 baseline，但只提示不影响判定
+    expect(g.baselineFlakyCases).toEqual(['a'])
+    expect(g.reasons.some((r) => r.includes('baseline contains 1 flaky case(s)'))).toBe(true)
+  })
+
+  it('text output has FLAKY count and detail lines', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), report([flakyCase('a')]), false)
+    const text = renderGateText(g)
+    expect(text).toContain('FLAKY=1')
+    expect(text).toContain('FLAKY_CASE a')
+  })
+
+  it('flaky first-attempt crash feeds the signature aggregation (double signal accepted)', () => {
+    const g = computeGate(
+      report([caseResult('a', 'pass'), caseResult('b', 'pass')]),
+      report([flakyCase('a', CRASH), flakyCase('b', CRASH)]),
+      false,
+    )
+    expect(g.verdict).toBe('WARN')
+    expect(g.flakyCases).toEqual(['a', 'b'])
+    expect(g.repeatedErrorSignatures).toEqual([{ signature: 'ENOENT@ensureSymlink', occurrences: 2, cases: ['a', 'b'] }])
+  })
+})
+
+describe('computeGate tool error recovery signals', () => {
+  const recoveredCase = (name: string): CaseResult => ({
+    ...caseResult(name, 'pass'),
+    toolErrors: [{ name: 'bash', error: 'exit 1' }],
+  })
+
+  it('WARN when a pass-with-tool-errors case is new vs baseline', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), report([recoveredCase('a')]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.toolErrorRecoveries).toEqual(['a'])
+    expect(g.reasons.some((r) => r.includes('tool error recovered: a'))).toBe(true)
+  })
+
+  it('PASS when the recovery already exists in baseline', () => {
+    const g = computeGate(report([recoveredCase('a')]), report([recoveredCase('a')]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.toolErrorRecoveries).toEqual([])
+  })
+
+  it('failing cases with tool errors are not recoveries', () => {
+    const fail = { ...caseResult('a', 'fail'), toolErrors: [{ name: 'bash', error: 'exit 1' }] }
+    const g = computeGate(report([fail]), report([fail]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.toolErrorRecoveries).toEqual([])
+  })
+})
+
+describe('computeGate error signature aggregation', () => {
+  const CRASH = "Error: ENOENT: no such file or directory, readlink '/x'\n    at readlinkSync (node:fs:1761:18)\n    at ensureSymlink (file:///app/lib/index.js:380:7)\n"
+  const crashedCase = (name: string): CaseResult => {
+    const base = caseResult(name, 'error')
+    return { ...base, attemptResults: [{ ...base.attemptResults[0], stderrTail: CRASH }] }
+  }
+
+  it('WARN when one signature repeats across cases (shared-state suspect)', () => {
+    const g = computeGate(report([caseResult('a', 'error'), caseResult('b', 'error')]), report([crashedCase('a'), crashedCase('b')]), false)
+    expect(g.verdict).toBe('WARN')
+    expect(g.repeatedErrorSignatures).toEqual([{ signature: 'ENOENT@ensureSymlink', occurrences: 2, cases: ['a', 'b'] }])
+    expect(g.reasons.some((r) => r.includes('repeated error signature: ENOENT@ensureSymlink x2'))).toBe(true)
+  })
+
+  it('does not signal on a single occurrence', () => {
+    const g = computeGate(report([caseResult('a', 'error')]), report([crashedCase('a')]), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.repeatedErrorSignatures).toEqual([])
+  })
+
+  it('text output has REPEATED_ERROR_SIGNATURES count and detail lines', () => {
+    const g = computeGate(report([caseResult('a', 'error'), caseResult('b', 'error')]), report([crashedCase('a'), crashedCase('b')]), false)
+    const text = renderGateText(g)
+    expect(text).toContain('REPEATED_ERROR_SIGNATURES=1')
+    expect(text).toContain('ERROR_SIGNATURE ENOENT@ensureSymlink: x2 across [a, b]')
+  })
+})
+
+describe('computeGate dsh version change', () => {
+  const withVersion = (r: RunReport, dshVersion: string): RunReport => ({ ...r, dshVersion })
+
+  it('stays PASS and only adds an informational reason + output line', () => {
+    const before = withVersion(report([caseResult('a', 'pass')]), '0.1.0-rc.6')
+    const after = withVersion(report([caseResult('a', 'pass')]), '0.1.1-rc.2')
+    const g = computeGate(before, after, false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.dshVersionChange).toEqual({ before: '0.1.0-rc.6', after: '0.1.1-rc.2' })
+    expect(g.reasons.some((r) => r.includes('dsh version changed: 0.1.0-rc.6 -> 0.1.1-rc.2'))).toBe(true)
+    const text = renderGateText(g)
+    expect(text).toContain('DSH_VERSION_CHANGED=0.1.0-rc.6 -> 0.1.1-rc.2')
+  })
+
+  it('no signal when version is unchanged or missing on either side', () => {
+    const a = withVersion(report([caseResult('x', 'pass')]), '0.1.1-rc.2')
+    expect(computeGate(a, a, false).dshVersionChange).toBeUndefined()
+    expect(computeGate(report([caseResult('x', 'pass')]), a, false).dshVersionChange).toBeUndefined()
+  })
+})
+
 describe('gateExitCode', () => {
   it('maps verdicts per protocol', () => {
     expect(gateExitCode('PASS', false)).toBe(0)

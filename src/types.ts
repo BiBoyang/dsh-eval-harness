@@ -254,6 +254,26 @@ export interface GateReport {
   tokenRegressions: GateTokenDiff[]
   /** 状态不变但 skippedLines 增长的用例（trace 解析漏帧增多，断言可能基于残缺数据） */
   skippedLineIncreases: GateSkippedLinesDiff[]
+  /** 本次新增 flaky（重跑后才过）的用例名；baseline 中已 flaky 的不重复计（防告警疲劳） */
+  flakyCases: string[]
+  /** baseline 里仍带 flaky 标记的用例名（baseline hygiene 提示，不影响判定） */
+  baselineFlakyCases: string[]
+  /** pass 但 toolErrors 非空（agent 自我纠正了工具错误）且较 baseline 新增的用例名 */
+  toolErrorRecoveries: string[]
+  /** 同一 stderr 错误签名出现 >= 2 次的聚合（「崩在同一处」的共享态事故信号） */
+  repeatedErrorSignatures: ErrorSignatureGroup[]
+  /** dsh 版本较 baseline 变化（informational：跨版本结果不可直接比，但不影响判定） */
+  dshVersionChange?: { before: string; after: string }
+}
+
+/** stderr 错误签名聚合分组（extractErrorSignature 的产物，跨用例/跨 attempt） */
+export interface ErrorSignatureGroup {
+  /** `<错误码>@<栈顶应用帧函数>` */
+  signature: string
+  /** 出现总次数 */
+  occurrences: number
+  /** 涉及的用例名（去重，按报告顺序） */
+  cases: string[]
 }
 
 /** skippedLines 增长明细（before/after 为跳过的不良 JSONL 行数） */

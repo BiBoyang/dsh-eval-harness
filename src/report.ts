@@ -1,3 +1,4 @@
+import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
 import type { RunReport } from './types.js'
 
 /** JSON 报告（report.json） */
@@ -14,8 +15,9 @@ function formatTokens(t: RunReport['cases'][number]['tokens']): string {
   return `${t.total} (in ${t.input}+out ${t.output}+reas ${t.reasoning}; cacheR ${t.cacheRead}+cacheW ${t.cacheWrite})`
 }
 
-/** Markdown 报告（report.md）：汇总 + 用例表 + 失败明细 */
+/** Markdown 报告（report.md）：汇总 + 用例表 + 失败明细 + 错误签名聚合 */
 export function renderMarkdown(report: RunReport): string {
+  const flakyCount = report.cases.filter((c) => c.flaky === true).length
   const lines: string[] = [
     '# dsh-eval-harness 评测报告',
     '',
@@ -24,7 +26,7 @@ export function renderMarkdown(report: RunReport): string {
     `- 总耗时：${report.durationMs} ms`,
     `- profile：${report.profile}`,
     ...(report.dshVersion === undefined ? [] : [`- dsh 版本：${mdEscape(report.dshVersion)}`]),
-    `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}`,
+    `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}${flakyCount > 0 ? `（其中 flaky ${flakyCount} 条——重跑后才过，首跑失败原因需排查）` : ''}`,
     '',
     '| 用例 | 结果 | steps | events/skipped | tokens total (in+out+reas; cacheR+cacheW) | turn_end | 可靠性 (trials) | 耗时 ms |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
@@ -72,6 +74,17 @@ export function renderMarkdown(report: RunReport): string {
       }
       lines.push('')
     }
+  }
+  // 同一 stderr 签名跨用例/跨 attempt 反复出现 = 「崩在同一处」的共享态事故信号
+  // （典型如上游并发竞态）。单次出现的崩溃已在失败明细里，这里只聚合重复签名。
+  const repeated = aggregateErrorSignatures(report).filter((g) => g.occurrences >= REPEATED_SIGNATURE_THRESHOLD)
+  if (repeated.length > 0) {
+    lines.push('', '## 错误签名聚合', '')
+    lines.push('以下 stderr 错误签名出现了不止一次——大概率不是单条用例的问题，去查共享态（上游并发、环境、版本切换）：', '')
+    for (const g of repeated) {
+      lines.push(`- \`${mdEscape(g.signature)}\` × ${g.occurrences}（用例：${g.cases.map(mdEscape).join(', ')}）`)
+    }
+    lines.push('')
   }
   return `${lines.join('\n')}\n`
 }
