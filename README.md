@@ -12,12 +12,12 @@ DSH 插件/skill 作者的回归评测门禁：写 yaml 用例 → headless 驱�
 
 ## 安装
 
-已发布到 npm（[`dsh-eval-harness`](https://www.npmjs.com/package/dsh-eval-harness)）：
+> **npm 渠道已废弃**：registry 上的 [`dsh-eval-harness`](https://www.npmjs.com/package/dsh-eval-harness) 停留在 0.3.1，不再更新，请勿从 npm 安装。分发只走 GitHub。
+
+从 GitHub 源码安装：
 
 ```sh
-dsh plugin --profile headless add dsh-eval-harness
-# 或从 GitHub 源码安装：
-# dsh plugin --profile headless add github:boyang/dsh-eval-harness
+dsh plugin --profile headless add github:BiBoyang/dsh-eval-harness
 
 # 验证挂载
 dsh --profile headless --dump-config | grep dsh-eval-harness
