@@ -1,0 +1,13 @@
+# 阳性对照：只有 reasoning、无正文、max_tokens 收尾——必须触发 max-tokens 检出
+# （exit 1）。若 dsh 变为静默通过（exit 0 / completed），本用例变红
+name: chaos-f5-think-only
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F5
+  once: true
+assert:
+  turn_end: max-tokens
+  exit_code: 1
+  max_steps: 6

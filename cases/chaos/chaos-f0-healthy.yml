@@ -1,0 +1,12 @@
+# 对照组：健康流。内容完整送达 + 全部终止证人（chaos 包全绿的锚点）
+name: chaos-f0-healthy
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F0
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P01】", "【P24】"]
+  max_steps: 6

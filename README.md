@@ -50,9 +50,14 @@ require_plugins: [some-plugin]  # 可选，元信息
 tags: [fast]                    # 可选，标签；eval_run 的 tags 筛选按任一命中匹配
 retries: 1                      # 可选，失败重跑次数（非负整数，缺省用 eval_run 的全局 retries）
 trials: 3                       # 可选，可靠性测量的独立 trial 次数（正整数，缺省用 eval_run 的全局 trials，默认 1）；
-                                # trials > 1 时忽略 retries——测量必须是无重试干预的原始单次成功率
+                                # trials > 1 时忽略 retries——测量必须是没有重试干预的原始单次成功率
+mock:                           # 可选，mock 模式（见下节；不用真实 API，离线确定性）
+  fault: F4                     #   注入故障形态 F0-F5（缺省 F0）
+  api: openai-completions       #   协议端点：openai-completions / openai-responses / anthropic-messages（缺省 openai-completions）
+  once: true                    #   可选，一次性故障：仅首个 LLM 请求命中，此后回 F0（横评矩阵语义）
 assert:
   turn_end: completed           # turn/end 事件的 reason.kind
+  exit_code: 0                  # 可选，dsh 子进程退出码；声明后非零退出进断言层比对（不再直接记 error）
   tools_called: [tool_a]        # tool/call 名称序列须按序包含（保序子序列）
   output_contains: ["关键词"]    # 最终 assistant 文本须包含全部
   max_steps: 8                  # 可选，step/end 数上限
@@ -94,6 +99,43 @@ completions 接口（零依赖，Node 内置 fetch），配置全靠环境变量
 **解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量/map 序列、
 flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不支持锚点、多文档；
 解析失败报带行号的 `eval_run:` 前缀错误。
+
+## mock 模式与 chaos 包
+
+用例带 `mock:` 段时，eval_run 不再依赖真实 LLM API：每个 attempt 起一个独立
+ephemeral mock provider（127.0.0.1 随机端口，用后即收），生成隔离 `DSH_HOME`
+（settings.yaml + profile patch 指向该 mock；不碰用户真实 `~/.dsh`），子进程 env
+覆盖 `DSH_HOME` / `MOCK_API_KEY` 并清掉代理变量。mock 按 F0-F5 故障矩阵输出
+**与真实 API 逐事件对齐**的 SSE 流（三协议端点同挂），协议异常路径因此变成
+离线、零成本、无 flaky 的确定性回归。
+
+- **故障形态**：F0 健康流；F1 中途 FIN；F2 丢终止事件；F3 半事件 FIN；F4 length
+  截断（Responses 方言为独立 `response.incomplete` 事件）；F5 think-only 截断
+  （阳性对照）。
+- **once 语义**：`once: true` 时仅首个 LLM 请求命中故障、此后回 F0——dsh 的断流
+  重试会走健康流（横评矩阵即此口径）；缺省为持续注入（每次请求都命中）。
+- **送达证明**：报告 attempt 级附 `mockDelivery`（每 LLM 请求一条：端口、fault、
+  事件数、字节数、终止证人送达情况、关流方式）——"故障确实送达"可证，排除
+  "故障没送达导致的假绿/假红"。空数组同样是信号：dsh 根本没打到 mock。
+- **exit_code 断言**：声明后非零退出进入断言层比对（未声明的非零退出仍直接记
+  error）。chaos 用例靠它钉住「截断必须显式失败」。
+- **dsh_bin 指向源码仓库跑法时的 tsx 解析坑**：子进程 cwd 是用例 workspace，
+  tsx 从 cwd 找不到 dsh 仓库的 tsconfig（`@deepseek-ai/*` 的 paths 映射失效，
+  会撞上 stale lib，报 `FiberState` 类导出缺失错误）。解法：设环境变量
+  `TSX_TSCONFIG_PATH=<dsh 仓库根>/tsconfig.json`（runner 透传 process.env）。
+  npm 包形态（`npx -y @deepseek-ai/dsh` 或全局 dsh）无此问题。
+
+[`cases/chaos/`](cases/chaos/) 是内建故障回归包（六条，`tags: [chaos]`，
+`eval_run` 传 `tags=chaos` 单跑），把 dsh 0.1.7-rc.2 在六种故障下的实测行为固化为
+断言：F0 对照组；F1-F3 断流静默重试自愈（exit 0 / completed）；F4/F5 检出 length
+截断（exit 1 / turn_end `max-tokens`）。全部离线可跑（无需 `DEEPSEEK_API_KEY`），
+已做阳性对照验证（人为改 fault 证明用例能红）。
+
+**诚实边界**：mock 模式覆盖结构性断言与协议故障路径回归；它**不**覆盖
+`output_judge` 语义评审和任何依赖真实模型能力的用例——这些仍需真实 API，
+mock 不是全面断网方案。chaos 断言钉的是 dsh 当前行为（含 L1 级的缺陷现状：
+F4 检出但无用户文案），**行为固化不等于行为背书**——上游把检出改善为显式告知
+（L2+）或退化为静默（L0），chaos 包都会变红提醒人工确认基线。
 
 ## 工具参数
 

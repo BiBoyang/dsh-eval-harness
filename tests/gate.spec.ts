@@ -539,3 +539,31 @@ describe('loadReport schema validation', () => {
     expect(await loadReport(join(root, 'missing.json'), true)).toBeNull()
   })
 })
+
+describe('loadReport with mockDelivery (schema 兼容)', () => {
+  it('accepts attemptResults carrying the optional mockDelivery field', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-gate-mock-'))
+    const c = caseResult('mock-case', 'pass')
+    const attempt = c.attemptResults[0]
+    if (!attempt) throw new Error('missing attempt')
+    attempt.mockDelivery = [
+      {
+        port: 54321,
+        endpoint: 'cc',
+        fault: 'F0',
+        stream: true,
+        bytesSent: 7339,
+        eventsCount: 27,
+        witnesses: { ccDone: true, ccFinishChunk: true, responsesCompleted: false, responsesIncomplete: false, anthropicMessageStop: false },
+        ending: 'clean',
+      },
+    ]
+    const path = join(root, 'after.json')
+    await writeFile(path, JSON.stringify(report([c])))
+    const loaded = await loadReport(path)
+    expect(loaded?.cases[0]?.name).toBe('mock-case')
+    // gate 判定不受信息层字段影响
+    const gate = computeGate(null, loaded ?? report([]), false)
+    expect(gate.verdict).toBe('N/A')
+  })
+})

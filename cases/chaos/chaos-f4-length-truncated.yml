@@ -1,0 +1,14 @@
+# length 截断：dsh 检出（exit 1 + turn_end max-tokens）但无用户文案——L1 现状固化，
+# 不是行为背书；上游若改为 L2+（显式告知）或退化为 L0（静默）都会让本用例变红
+name: chaos-f4-length-truncated
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F4
+  once: true
+assert:
+  turn_end: max-tokens
+  exit_code: 1
+  output_contains: ["【Q24】"]
+  max_steps: 6

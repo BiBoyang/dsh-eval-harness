@@ -1,0 +1,14 @@
+# 中途干净关流（若干 chunk 后 TCP FIN，无终止证人）：dsh 0.1.7-rc.2 静默重试自愈——
+# once 语义下重试命中健康流，最终完整交付（L0 现状固化：自愈本身不给用户任何信号）
+name: chaos-f1-mid-stream-fin
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F1
+  once: true
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P24】"]
+  max_steps: 6

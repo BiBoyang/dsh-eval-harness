@@ -1,7 +1,12 @@
+import type { MockDeliveryWitnesses, MockEndpoint, MockEnding, MockFault } from './mock.js'
+
 /** 评测用例断言（cases/*.yml 的 assert 段） */
 export interface EvalAssert {
   /** 对应 turn/end 事件 data.reason.kind */
   turn_end?: string
+  /** dsh 子进程退出码（与 AttemptResult.exitCode 比对；未声明不断言。
+   * 声明后非零退出不再直接记 error，而是走断言——chaos 用例靠它钉住「截断必须显式失败」 */
+  exit_code?: number
   /** tool/call 名称序列须按序包含（保序子序列匹配） */
   tools_called?: string[]
   /** tool/call 名称序列完全相等（长度+顺序+内容），表达"恰好调用这些" */
@@ -53,6 +58,23 @@ export interface ToolResultRecord {
   text: string
 }
 
+/** mock 模式的协议选择（对应 dsh llm-pi-ai providers.<id>.api 字段） */
+export type MockApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+
+/** 用例级 mock 声明（cases/*.yml 的 mock 段；v1 只支持 fault，无 script） */
+export interface MockCaseConfig {
+  /** 注入故障形态 F0-F5，缺省 F0 */
+  fault?: MockFault
+  /** 走哪个协议端点，缺省 openai-completions（dsh 最常用路径） */
+  api?: MockApi
+  /**
+   * 一次性故障（横评矩阵语义）：仅第一个 LLM 请求命中，此后控制面回 F0——
+   * dsh 的流断开重试会走健康流（F1-F3 静默自愈）。缺省 false（持续注入，
+   * 每个请求都命中，dsh 重试全部失败）。
+   */
+  once?: boolean
+}
+
 /** 单条评测用例 */
 export interface EvalCase {
   name: string
@@ -64,6 +86,8 @@ export interface EvalCase {
   retries?: number
   /** 可靠性测量的独立 trial 次数（正整数；缺省用 eval_run 的全局 trials，默认 1 单次）。trials > 1 时忽略 retries——测量必须是没有重试干预的原始单次成功率 */
   trials?: number
+  /** mock 模式：per-case 起 ephemeral mock provider + 隔离 DSH_HOME 指向它 */
+  mock?: MockCaseConfig
   assert: EvalAssert
 }
 
@@ -125,6 +149,21 @@ export type CaseStatus = 'pass' | 'fail' | 'error'
 export const CURRENT_REPORT_SCHEMA_VERSION = 1
 export type ReportSchemaVersion = 0 | 1
 
+/** mock 模式下单个 LLM 请求的送达证明摘要（仅 mock 用例的 attempt 有；空数组本身是信号——dsh 没打 mock） */
+export interface MockDeliverySummary {
+  /** mock server 监听端口（runEval 结束后即回收；供诊断与「无残留端口」验证） */
+  port: number
+  endpoint: MockEndpoint
+  fault: MockFault
+  stream: boolean
+  bytesSent: number
+  eventsCount: number
+  /** 终止证人送达情况 */
+  witnesses: MockDeliveryWitnesses
+  /** 关流方式 */
+  ending: MockEnding
+}
+
 /** 单次 attempt 的完整结果；CaseResult 顶层字段是最后一次 attempt 的兼容投影。 */
 export interface AttemptResult {
   index: number
@@ -145,6 +184,8 @@ export interface AttemptResult {
   timedOut?: boolean
   stderrTail?: string
   durationMs: number
+  /** mock 用例的送达证明摘要（每 LLM 请求一条）；信息层，v1 无对应断言 */
+  mockDelivery?: MockDeliverySummary[]
 }
 
 /** 每条用例的可靠性测量（trials > 1 时写入；trials = 1 时省略） */

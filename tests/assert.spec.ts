@@ -198,3 +198,30 @@ describe('new assertions (P1)', () => {
     expect(failures[0]).toBe("tool_result_contains: tool 'ghost' was never called (no result recorded)")
   })
 })
+
+describe('exit_code assertion', () => {
+  it('未声明时不断言：任何退出码（含 undefined/null）都不产生失败', () => {
+    expect(checkAssertions({}, trace(), { exitCode: 0 })).toHaveLength(0)
+    expect(checkAssertions({}, trace(), { exitCode: 1 })).toHaveLength(0)
+    expect(checkAssertions({}, trace())).toHaveLength(0)
+    expect(checkAssertions({}, trace(), { exitCode: null })).toHaveLength(0)
+  })
+
+  it('匹配通过：期望 1 实际 1（chaos 用例的截断必须显式失败）', () => {
+    expect(checkAssertions({ exit_code: 1 }, trace(), { exitCode: 1 })).toHaveLength(0)
+    expect(checkAssertions({ exit_code: 0 }, trace(), { exitCode: 0 })).toHaveLength(0)
+  })
+
+  it('不匹配失败：期望 1 实际 0', () => {
+    const failures = checkAssertions({ exit_code: 1 }, trace(), { exitCode: 0 })
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toContain('exit_code')
+    expect(failures[0]).toContain('1')
+    expect(failures[0]).toContain('0')
+  })
+
+  it('缺失/被信号终止时报 <missing> / signal，不误判为 0', () => {
+    expect(checkAssertions({ exit_code: 1 }, trace())[0]).toContain('<missing>')
+    expect(checkAssertions({ exit_code: 1 }, trace(), { exitCode: null })[0]).toContain('signal/terminated')
+  })
+})

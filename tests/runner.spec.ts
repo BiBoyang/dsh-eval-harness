@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildOverlayYaml, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
@@ -145,6 +145,29 @@ describe('findSessionFile', () => {
     const fresh = await writeSession(root, 'cwddir/session-new', sessionJsonl(0), new Date(now))
     expect(await findSessionFile(root, now - 1000)).toBe(fresh)
     expect(await findSessionFile(root, now + 1000)).toBeNull()
+  })
+})
+
+describe('findSessionFile v4 filenames', () => {
+  it('matches session.v4.jsonl.zstd (dsh 0.1.7-rc.2 current generation) alongside legacy names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-v4-'))
+    const dir = join(root, '000-case', 'session-x')
+    await mkdir(dir, { recursive: true })
+    const sessionJsonl2 = sessionJsonl(0)
+    await writeFile(join(dir, 'session.v4.jsonl.zstd'), sessionJsonl2) // findSessionFile 只按文件名筛取，不解析内容
+    const found = await findSessionFile(join(root, '000-case'), 0)
+    expect(found).toBe(join(dir, 'session.v4.jsonl.zstd'))
+  })
+
+  it('still matches legacy session.jsonl / session.jsonl.zstd and rejects unrelated names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-v4b-'))
+    const dir = join(root, 'c', 'session-y')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'session.jsonl'), sessionJsonl(0))
+    await writeFile(join(dir, 'other.v4.jsonl.zstd'), 'x')
+    await writeFile(join(dir, 'session.v4.jsonl.zstd.tmp'), 'x')
+    const found = await findSessionFile(root, 0)
+    expect(found).toBe(join(dir, 'session.jsonl'))
   })
 })
 
@@ -856,4 +879,263 @@ describe('runEval output_judge (LLM-as-judge)', () => {
     expect(calls).toBe(0)
     expect(c.failures.every((f) => !f.startsWith('output_judge:'))).toBe(true)
   }, 15_000)
+})
+
+describe('parseCase mock + exit_code', () => {
+  it('parses mock block (fault + api) and assert.exit_code', () => {
+    const c = parseCase(
+      ['name: m', 'prompt: "p"', 'mock:', '  fault: F4', '  api: openai-responses', 'assert:', '  exit_code: 1', ''].join('\n'),
+      'm.yml',
+    )
+    expect(c.mock).toEqual({ fault: 'F4', api: 'openai-responses' })
+    expect(c.assert.exit_code).toBe(1)
+  })
+
+  it('keeps absent mock keys undefined (defaults apply at run time)', () => {
+    const c = parseCase('name: m\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  max_steps: 3\n', 'm.yml')
+    expect(c.mock).toEqual({ fault: 'F0' })
+    expect(parseCase('name: m\nprompt: "p"\nassert:\n  max_steps: 3\n', 'm.yml').mock).toBeUndefined()
+  })
+
+  it('rejects mock that is not a mapping', () => {
+    expect(() => parseCase('name: m\nprompt: "p"\nmock: [F4]\nassert: {}\n', 'm.yml')).toThrow(/'mock' must be a mapping/)
+  })
+
+  it('parses mock.once (one-shot fault) and rejects non-boolean', () => {
+    const c = parseCase('name: m\nprompt: "p"\nmock:\n  fault: F1\n  once: true\nassert:\n  max_steps: 3\n', 'm.yml')
+    expect(c.mock).toEqual({ fault: 'F1', once: true })
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  once: "yes"\nassert:\n  max_steps: 3\n', 'm.yml')).toThrow(/mock\.once' must be a boolean/)
+  })
+
+  it('rejects invalid fault / api values', () => {
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  fault: F9\nassert: {}\n', 'm.yml')).toThrow(/mock\.fault' must be one of F0-F5/)
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  api: xml-rpc\nassert: {}\n', 'm.yml')).toThrow(/mock\.api' must be one of/)
+  })
+
+  it('rejects non-integer / negative exit_code', () => {
+    expect(() => parseCase('name: m\nprompt: "p"\nassert:\n  exit_code: -1\n', 'm.yml')).toThrow(/exit_code' must be a non-negative integer/)
+    expect(() => parseCase('name: m\nprompt: "p"\nassert:\n  exit_code: 1.5\n', 'm.yml')).toThrow(/exit_code' must be a non-negative integer/)
+    expect(() => parseCase('name: m\nprompt: "p"\nassert:\n  exit_code: "1"\n', 'm.yml')).toThrow(/exit_code' must be a non-negative integer/)
+  })
+})
+
+describe('buildMockSettingsYaml', () => {
+  it('mirrors the cross-eval verified settings structure with dynamic baseURL/api', () => {
+    const y = buildMockSettingsYaml('http://127.0.0.1:45678/v1', 'openai-completions')
+    expect(y).toContain('provider: mock')
+    expect(y).toContain('api: openai-completions')
+    expect(y).toContain('baseURL: http://127.0.0.1:45678/v1')
+    expect(y).toContain('apiKeyEnv: MOCK_API_KEY')
+    expect(y).toContain('defaultPreset: danger-full-access')
+  })
+})
+
+describe('runEval mock mode', () => {
+  /** mock 版 fake dsh：读取 DSH_HOME/settings.yaml 的 baseURL 打一次 mock，记录关键 env，落 session 日志 */
+  const writeMockFakeDsh = async (root: string, opts: { exit?: number; curl?: boolean } = {}): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh-mock')
+    const lines = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'env > "$DSH_HOME/seen-env.txt"',
+    ]
+    if (opts.curl !== false) {
+      lines.push(
+        'base=$(sed -n \'s/^ *baseURL: \\(.*\\)$/\\1/p\' "$DSH_HOME/settings.yaml")',
+        'curl -sS -N -X POST -H \'content-type: application/json\' -d \'{"model":"mock-model","stream":true}\' "$base/chat/completions" >/dev/null',
+      )
+    }
+    lines.push(
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+      `exit ${opts.exit ?? 0}`,
+      '',
+    )
+    await writeFile(fakeBin, lines.join('\n'), { mode: 0o755 })
+    return fakeBin
+  }
+
+  it('wires an ephemeral mock server + isolated DSH_HOME; delivery proof lands in the attempt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mock-'))
+    const fakeBin = await writeMockFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'm.yml'), 'name: mock-f0\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+
+    const c = report.cases[0]
+    expect(c.status).toBe('pass')
+    const attempt = c.attemptResults[0]
+    expect(attempt.mockDelivery).toHaveLength(1)
+    const delivery = attempt.mockDelivery?.[0]
+    expect(delivery?.endpoint).toBe('cc')
+    expect(delivery?.fault).toBe('F0')
+    expect(delivery?.stream).toBe(true)
+    expect(delivery?.eventsCount).toBe(27)
+    expect(delivery?.bytesSent).toBeGreaterThan(0)
+    expect(delivery?.ending).toBe('clean')
+    expect(delivery?.witnesses).toEqual({ ccDone: true, ccFinishChunk: true, responsesCompleted: false, responsesIncomplete: false, anthropicMessageStop: false })
+
+    // 子进程 env：隔离 DSH_HOME + dummy 凭据，代理被清掉
+    const mockHome = join(out, '.mock-home', '000-mock-f0', 'attempt-1')
+    const envMap = new Map(
+      (await readFile(join(mockHome, 'seen-env.txt'), 'utf8'))
+        .split('\n')
+        .filter((l) => l.includes('='))
+        .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
+    )
+    expect(envMap.get('DSH_HOME')).toBe(mockHome)
+    expect(envMap.get('MOCK_API_KEY')).toBe('mock')
+    expect(envMap.get('DEEPSEEK_API_KEY')).toBe('mock')
+    expect(envMap.has('HTTP_PROXY')).toBe(false)
+    expect(envMap.has('http_proxy')).toBe(false)
+    // 隔离 DSH_HOME 结构（settings + profile 三件套）
+    expect(await readFile(join(mockHome, 'settings.yaml'), 'utf8')).toContain('baseURL: http://127.0.0.1:')
+    expect(await readFile(join(mockHome, 'profiles/headless/package.json'), 'utf8')).toContain('dsh-headless')
+    expect(await readFile(join(mockHome, 'profiles/headless/cordis.patch.yml'), 'utf8')).toContain('llm-pi-ai')
+  }, 20_000)
+
+  it('mock case where dsh never calls the mock records an empty delivery array (signal, not absence)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mockn-'))
+    const fakeBin = await writeMockFakeDsh(root, { curl: false })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'm.yml'), 'name: mock-untouched\nprompt: "p"\nmock:\n  fault: F2\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    expect(report.cases[0]?.status).toBe('pass')
+    expect(report.cases[0]?.attemptResults[0]?.mockDelivery).toEqual([])
+  }, 20_000)
+
+  it('mock.once arms a one-shot fault: first request faulted, retry hits healthy F0', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mockonce-'))
+    // fake dsh 连打两次 mock（模拟断流重试）
+    const fakeBin = join(root, 'fake-dsh-twice')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'base=$(sed -n \'s/^ *baseURL: \\(.*\\)$/\\1/p\' "$DSH_HOME/settings.yaml")',
+        'curl -sS -N -X POST -H \'content-type: application/json\' -d \'{"model":"mock-model","stream":true}\' "$base/chat/completions" >/dev/null',
+        'curl -sS -N -X POST -H \'content-type: application/json\' -d \'{"model":"mock-model","stream":true}\' "$base/chat/completions" >/dev/null',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' > \"$dir/session.jsonl\"",
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'm.yml'), 'name: mock-once-f1\nprompt: "p"\nmock:\n  fault: F1\n  once: true\nassert:\n  max_steps: 3\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    expect(report.cases[0]?.status).toBe('pass')
+    const delivery = report.cases[0]?.attemptResults[0]?.mockDelivery
+    // 一次性语义：首个请求 F1（fin 截断），此后控制面回 F0（健康流）
+    expect(delivery?.map((d) => `${d.fault}/${d.ending}`)).toEqual(['F1/fin', 'F0/clean'])
+  }, 20_000)
+
+  it('two concurrent mock cases use distinct servers without cross-talk, and ports are released afterwards', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mockp-'))
+    const fakeBin = await writeMockFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'a.yml'), 'name: mock-a\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
+    await writeFile(join(casesDir, 'b.yml'), 'name: mock-b\nprompt: "p"\nmock:\n  fault: F4\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, concurrency: 2, timeoutMs: 20_000 })
+    expect(report.cases.map((c) => c.status)).toEqual(['pass', 'pass'])
+
+    const a = report.cases[0]?.attemptResults[0]?.mockDelivery
+    const b = report.cases[1]?.attemptResults[0]?.mockDelivery
+    expect(a?.[0]?.fault).toBe('F0')
+    expect(b?.[0]?.fault).toBe('F4')
+    // 各自独立 server：端口不同，送达证明互不混入
+    expect(a?.[0]?.port).not.toBe(b?.[0]?.port)
+    expect(a).toHaveLength(1)
+    expect(b).toHaveLength(1)
+    // 用例结束后端口已回收：连接被拒
+    for (const port of [a?.[0]?.port, b?.[0]?.port]) {
+      if (port === undefined) throw new Error('missing port')
+      await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow()
+    }
+  }, 30_000)
+
+  it('declared exit_code keeps a non-zero exit in assertion land; mismatch fails; undeclared stays error', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mockx-'))
+    // fake dsh 按提示词标记退出：prompt 含 EXIT1 → 1，含 EXIT0 → 0
+    const fakeBin = join(root, 'fake-dsh-exit')
+    const base = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'case "$5" in *EXIT1*) code=1 ;; *EXIT0*) code=0 ;; *) code=0 ;; esac',
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' > \"$dir/session.jsonl\"",
+      'exit $code',
+      '',
+    ]
+    await writeFile(fakeBin, base.join('\n'), { mode: 0o755 })
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    // 声明 1 / 实际 1：非零退出进入断言层并通过（chaos 形态）
+    await writeFile(join(casesDir, 'a.yml'), 'name: expected-exit\nprompt: "EXIT1"\nassert:\n  exit_code: 1\n')
+    // 声明 1 / 实际 0：截断静默通过（子进程没显式失败）→ 用例变红
+    await writeFile(join(casesDir, 'b.yml'), 'name: wrong-exit\nprompt: "EXIT0"\nassert:\n  exit_code: 1\n')
+    // 未声明 / 实际 1：维持既有行为——error
+    await writeFile(join(casesDir, 'c.yml'), 'name: undeclared-exit\nprompt: "EXIT1"\nassert:\n  max_steps: 3\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const byName = new Map(report.cases.map((c) => [c.name, c]))
+    expect(byName.get('expected-exit')?.status).toBe('pass')
+    const wrong = byName.get('wrong-exit')
+    expect(wrong?.status).toBe('fail')
+    expect(wrong?.failures[0]).toContain('exit_code')
+    const undeclared = byName.get('undeclared-exit')
+    expect(undeclared?.status).toBe('error')
+    expect(undeclared?.error).toContain('exited with code 1')
+  }, 20_000)
+
+  it('non-mock cases keep the plain env passthrough (no DSH_HOME override)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-plain-'))
+    const fakeBin = join(root, 'fake-dsh-plain')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'env > "$PWD/seen-env.txt"',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' > \"$dir/session.jsonl\"",
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'p.yml'), 'name: plain-case\nprompt: "p"\nassert:\n  max_steps: 3\n')
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+    expect(report.cases[0]?.status).toBe('pass')
+    expect(report.cases[0]?.attemptResults[0]?.mockDelivery).toBeUndefined()
+    const workspace = join(out, '.workspace', '000-plain-case')
+    const plainEnv = await readFile(join(workspace, 'seen-env.txt'), 'utf8')
+    if (process.env.DSH_HOME === undefined) {
+      expect(plainEnv).not.toContain('\nDSH_HOME=')
+      expect(plainEnv.startsWith('DSH_HOME=')).toBe(false)
+    } else {
+      expect(plainEnv).toContain(`DSH_HOME=${process.env.DSH_HOME}`)
+    }
+  }, 20_000)
 })

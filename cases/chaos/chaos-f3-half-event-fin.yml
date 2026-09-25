@@ -1,0 +1,13 @@
+# 半事件关流（半个 SSE 帧后 FIN）：同 F1，静默重试自愈
+name: chaos-f3-half-event-fin
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F3
+  once: true
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P24】"]
+  max_steps: 6

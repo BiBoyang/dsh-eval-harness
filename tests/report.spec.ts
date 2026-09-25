@@ -83,3 +83,30 @@ describe('renderMarkdown', () => {
     expect(repeated).toContain('`ENOENT@ensureSymlink` × 2（用例：a, b）')
   })
 })
+
+describe('renderMarkdown mock delivery', () => {
+  it('renders per-request mock delivery summary in the attempt detail line', () => {
+    const failing = caseResult('chaos-f4', 'fail')
+    const attempt = failing.attemptResults[0]
+    if (!attempt) throw new Error('missing attempt')
+    attempt.exitCode = 1
+    attempt.mockDelivery = [
+      {
+        port: 54321,
+        endpoint: 'cc',
+        fault: 'F4',
+        stream: true,
+        bytesSent: 13857,
+        eventsCount: 51,
+        witnesses: { ccDone: true, ccFinishChunk: true, responsesCompleted: false, responsesIncomplete: false, anthropicMessageStop: false },
+        ending: 'clean',
+      },
+    ]
+    const md = renderMarkdown(report([failing]))
+    expect(md).toContain('mock delivery (attempt 1): F4 cc 51ev 13857B ending=clean witnesses=ccDone+ccFinishChunk')
+  })
+
+  it('keeps non-mock cases free of mock noise', () => {
+    expect(renderMarkdown(report([caseResult('plain', 'fail')]))).not.toContain('mock ')
+  })
+})

@@ -1,5 +1,17 @@
 import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
-import type { RunReport } from './types.js'
+import type { MockDeliverySummary, RunReport } from './types.js'
+
+/** mock 送达证明摘要（多条以 ; 分隔）：fault 端点 事件数/字节数 + 关流方式 + 已送达的终止证人 */
+function formatMockDelivery(deliveries: MockDeliverySummary[]): string {
+  return deliveries
+    .map((d) => {
+      const wits = Object.entries(d.witnesses)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+      return `${d.fault} ${d.endpoint}${d.stream ? '' : ' non-stream'} ${d.eventsCount}ev ${d.bytesSent}B ending=${d.ending} witnesses=${wits.length > 0 ? wits.join('+') : 'none'}`
+    })
+    .join('; ')
+}
 
 /** JSON 报告（report.json） */
 export function renderJson(report: RunReport): string {
@@ -55,6 +67,12 @@ export function renderMarkdown(report: RunReport): string {
       if (c.stderrTail) lines.push(`- stderr: ${mdEscape(c.stderrTail)}`)
       for (const f of c.failures) lines.push(`- ${mdEscape(f)}`)
       for (const e of c.toolErrors) lines.push(`- tool error: ${mdEscape(e.name)}: ${mdEscape(e.error)}`)
+      // mock 送达证明（信息层）：单 attempt 用例也渲染——空数组同样是信号（dsh 没打 mock）
+      for (const attempt of c.attemptResults) {
+        if (attempt.mockDelivery !== undefined) {
+          lines.push(`- mock delivery (attempt ${attempt.index}): ${mdEscape(formatMockDelivery(attempt.mockDelivery))}`)
+        }
+      }
       if (c.attemptResults.length > 1) {
         lines.push('', '#### Attempt 历史', '')
         for (const attempt of c.attemptResults) {

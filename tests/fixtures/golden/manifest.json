@@ -1,0 +1,110 @@
+[
+  {
+    "file": "cc-f0.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/v1/chat/completions",
+    "protocol": "openai-completions",
+    "model": "deepseek-chat",
+    "note": "Chat Completions F0 正常流",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "用中文写一段关于秋天果园的短文，大约一百五十字，分两段。"
+        }
+      ]
+    },
+    "bytes": 38627
+  },
+  {
+    "file": "cc-truncated.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/v1/chat/completions",
+    "protocol": "openai-completions",
+    "model": "deepseek-chat",
+    "note": "Chat Completions 真实截断（max_tokens=1 诱发 finish_reason=length）",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "max_tokens": 1,
+      "messages": [
+        {
+          "role": "user",
+          "content": "从 1 逐个数到 100，每行一个阿拉伯数字，不要省略任何一行。"
+        }
+      ]
+    },
+    "bytes": 1025
+  },
+  {
+    "file": "responses-f0.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/v1/responses",
+    "protocol": "openai-responses",
+    "model": "deepseek-chat",
+    "note": "Responses F0 正常流",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "input": "用中文写一段关于秋天果园的短文，大约一百五十字，分两段。"
+    },
+    "bytes": 33935
+  },
+  {
+    "file": "responses-truncated.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/v1/responses",
+    "protocol": "openai-responses",
+    "model": "deepseek-chat",
+    "note": "Responses 真实截断（max_output_tokens=16 诱发 response.incomplete）——方言锚点",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "max_output_tokens": 16,
+      "input": "从 1 逐个数到 100，每行一个阿拉伯数字，不要省略任何一行。"
+    },
+    "bytes": 7794
+  },
+  {
+    "file": "anthropic-f0.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+    "protocol": "anthropic-messages",
+    "model": "deepseek-chat",
+    "note": "Anthropic Messages F0 正常流",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "max_tokens": 1024,
+      "messages": [
+        {
+          "role": "user",
+          "content": "用中文写一段关于秋天果园的短文，大约一百五十字，分两段。"
+        }
+      ]
+    },
+    "bytes": 18274
+  },
+  {
+    "file": "anthropic-truncated.sse.txt",
+    "capturedAt": "2026-09-25T18:09:29.687Z",
+    "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+    "protocol": "anthropic-messages",
+    "model": "deepseek-chat",
+    "note": "Anthropic Messages 真实截断（max_tokens=1 诱发 stop_reason=max_tokens）",
+    "request": {
+      "model": "deepseek-chat",
+      "stream": true,
+      "max_tokens": 1,
+      "messages": [
+        {
+          "role": "user",
+          "content": "从 1 逐个数到 100，每行一个阿拉伯数字，不要省略任何一行。"
+        }
+      ]
+    },
+    "bytes": 993
+  }
+]

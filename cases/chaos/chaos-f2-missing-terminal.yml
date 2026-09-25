@@ -1,0 +1,13 @@
+# 丢终止事件（内容全送、[DONE] 照发、携带 finish_reason 的末 chunk 缺席）：同 F1，静默重试自愈
+name: chaos-f2-missing-terminal
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [chaos]
+mock:
+  fault: F2
+  once: true
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P24】"]
+  max_steps: 6

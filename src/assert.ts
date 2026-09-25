@@ -10,15 +10,30 @@ export function isSubsequence<T>(seq: T[], sub: T[]): boolean {
   return i === sub.length
 }
 
+/** 断言引擎的进程观测上下文（exit_code 断言比对子进程退出码，不属于 trace） */
+export interface ProcessContext {
+  /** dsh 子进程退出码；被信号终止为 null，未观测（如手工构造）为 undefined */
+  exitCode?: number | null
+}
+
 /**
  * 断言引擎：把用例断言应用到 collector 观测结果上。
  * 返回失败消息列表；空数组 = 全部通过。
  */
-export function checkAssertions(assert: EvalAssert, trace: CollectedTrace): string[] {
+export function checkAssertions(assert: EvalAssert, trace: CollectedTrace, proc: ProcessContext = {}): string[] {
   const failures: string[] = []
 
   if (assert.turn_end !== undefined && trace.turnEnd !== assert.turn_end) {
     failures.push(`turn_end: expected '${assert.turn_end}', got '${trace.turnEnd ?? '<missing>'}'`)
+  }
+
+  if (assert.exit_code !== undefined) {
+    const actual = proc.exitCode
+    if (actual === undefined || actual === null) {
+      failures.push(`exit_code: expected ${assert.exit_code}, got ${actual === null ? 'signal/terminated' : '<missing>'}`)
+    } else if (actual !== assert.exit_code) {
+      failures.push(`exit_code: expected ${assert.exit_code}, got ${actual}`)
+    }
   }
 
   if (assert.tools_called !== undefined && !isSubsequence(trace.toolsCalled, assert.tools_called)) {
