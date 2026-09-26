@@ -124,6 +124,17 @@ ephemeral mock provider（127.0.0.1 随机端口，用后即收），生成隔�
   离线安装；本地路径 spec 由 pnpm 原生支持，转发安装器即继承）。**安装失败是用例
   级 error 而非 run 崩溃**：该用例记 error（消息含 spec、安装命令与安装器输出
   尾部），同 run 其他用例照常执行——安装失败是数据，不是事故。
+- **allowBuilds 预置与解锁（需构建插件）**：pnpm 11 默认拦截依赖的安装期构建
+  脚本（git/tarball 形态插件靠 `prepare` 构建产物，必被拦——装完即死）。eval_run
+  按**最小授权**解锁：registry 形态 spec（`@scope/name@ver`、`name@ver`）在生成
+  隔离 home 时把**声明的包名**预置进 profile 的 `pnpm-workspace.yaml` `allowBuilds`
+  （pnpm 对 registry 包按裸名匹配构建许可）；URL/git 形态的包名无法从 spec 推导
+  （pnpm 官方：git/tarball 依赖的裸包名永不放行，必须 `name@<精确解析路径>`），
+  安装器首次撞上 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 时，收割 pnpm 自打印的
+  精确 key（只接受引用本 spec 的），写入 profile 后**重试一次**——与 dsh 提示的
+  手工解锁流程（"add the exact key pnpm printed, then re-run"）完全同构，不猜名、
+  不全局放行。**风险语义：声明 `mock.plugins` 即授权这些插件的安装期构建脚本在
+  本机执行（任意代码运行）——只声明信得过源码的插件，并钉死版本/commit。**
 - **送达证明**：报告 attempt 级附 `mockDelivery`（每 LLM 请求一条：端口、fault、
   事件数、字节数、终止证人送达情况、关流方式）——"故障确实送达"可证，排除
   "故障没送达导致的假绿/假红"。空数组同样是信号：dsh 根本没打到 mock。

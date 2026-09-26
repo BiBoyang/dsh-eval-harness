@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, buildPluginInstallArgs, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, buildPluginInstallArgs, extractPluginPackageName, filterCases, findSessionFile, harvestAllowBuildKeys, parseCase, resolveDshCommand, runEval, splitDshBin, writeMockHome } from '../src/runner.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
@@ -1282,6 +1282,192 @@ describe('runEval mock mode', () => {
     } else {
       expect(plainEnv).toContain(`DSH_HOME=${process.env.DSH_HOME}`)
     }
+  }, 20_000)
+})
+
+describe('extractPluginPackageName（allowBuilds 授权单元的 spec 解析）', () => {
+  it('parses scoped npm specs (@scope/name[@version|@tag])', () => {
+    expect(extractPluginPackageName('@liustack/modlens@3.26.5')).toBe('@liustack/modlens')
+    expect(extractPluginPackageName('@scope/name')).toBe('@scope/name')
+    expect(extractPluginPackageName('@scope/name@beta')).toBe('@scope/name')
+  })
+
+  it('parses bare npm specs (name[@version|@tag])', () => {
+    expect(extractPluginPackageName('demo-plugin@1.2.3')).toBe('demo-plugin')
+    expect(extractPluginPackageName('dsh-find-plugin')).toBe('dsh-find-plugin')
+    expect(extractPluginPackageName('name@latest')).toBe('name')
+  })
+
+  it('returns null for URL / git / file / alias forms — the in-artifact name is unknowable (pinned behavior)', () => {
+    // pnpm：git/tarball 依赖的裸包名永不放行构建，必须 name@<精确路径>——猜名无意义
+    for (const spec of [
+      'https://codeload.github.com/yjh051108/dsh-routing-suite/tar.gz/195273352f23bff7f9023ebe2ec0cdbdf9c98f10',
+      'github:yjh051108/dsh-routing-suite#1952733',
+      'git+https://github.com/yjh051108/dsh-routing-suite.git#1952733',
+      'file:../local-plugin',
+      './local-plugin',
+      '@scope/name@https://registry.example/x.tgz',
+      'name@https://example.test/x.tar.gz',
+      'npm:real-pkg@1.0.0',
+    ]) {
+      expect(extractPluginPackageName(spec)).toBeNull()
+    }
+  })
+})
+
+describe('writeMockHome allowBuilds 预置（最小授权）', () => {
+  it('presets exactly the declared npm package names into the profile pnpm-workspace.yaml', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'mockhome-allow-'))
+    await writeMockHome(home, 'headless', 'http://127.0.0.1:1/v1', 'openai-completions', [
+      '@liustack/modlens@3.26.5',
+      'demo-plugin@1.2.3',
+      'https://codeload.github.com/yjh051108/dsh-routing-suite/tar.gz/195273352f23bff7f9023ebe2ec0cdbdf9c98f10',
+    ])
+    const text = await readFile(join(home, 'profiles', 'headless', 'pnpm-workspace.yaml'), 'utf8')
+    // 最小授权：只出现两个声明包名；URL 形态的任何派生物（含仓库名）都不出现
+    expect(text).toContain('"@liustack/modlens": true')
+    expect(text).toContain('"demo-plugin": true')
+    expect(text.match(/: true/g)).toHaveLength(2)
+    expect(text).not.toContain('codeload')
+    expect(text).not.toContain('dsh-routing-suite')
+    // dsh 默认模板要素原样保留（hoisted linker 是插件共享 cordis 单例的承重点）
+    expect(text).toContain('packages:\n  - .')
+    expect(text).toContain('nodeLinker: hoisted')
+    expect(text).toContain('autoInstallPeers: false')
+  })
+
+  it('writes no pnpm-workspace.yaml when nothing resolvable is declared (dsh falls back to its own default)', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'mockhome-noallow-'))
+    await writeMockHome(home, 'headless', 'http://127.0.0.1:1/v1', 'openai-completions', ['https://example.test/x.tar.gz'])
+    await expect(readFile(join(home, 'profiles', 'headless', 'pnpm-workspace.yaml'), 'utf8')).rejects.toThrow()
+  })
+})
+
+describe('harvestAllowBuildKeys（收割 pnpm 自打印的精确 key）', () => {
+  const spec = 'https://codeload.github.com/o/r/tar.gz/abc123'
+  const blocked = [
+    '[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched from "https://codeload.github.com/o/r/tar.gz/abc123": The git-hosted package "real-name@1.0.0" needs to execute build scripts but is not in the "allowBuilds" allowlist.',
+    '',
+    'Add the package to "allowBuilds" in your project\'s pnpm-workspace.yaml to allow it to run scripts. For example:',
+    'allowBuilds:',
+    '  real-name@https://codeload.github.com/o/r/tar.gz/abc123: true',
+  ].join('\n')
+
+  it('harvests the exact key pnpm printed when it references the declared spec', () => {
+    expect(harvestAllowBuildKeys(blocked, spec)).toEqual(['real-name@https://codeload.github.com/o/r/tar.gz/abc123'])
+  })
+
+  it('rejects keys that do not reference the declared spec (最小授权红线)', () => {
+    const foreign = blocked.replace(
+      '  real-name@https://codeload.github.com/o/r/tar.gz/abc123: true',
+      '  evil@https://other.example/x.tgz: true',
+    )
+    expect(harvestAllowBuildKeys(foreign, spec)).toEqual([])
+  })
+
+  it('keeps only spec-bound keys when several are printed', () => {
+    const mixed = `${blocked}\n  also-bound@https://codeload.github.com/o/r/tar.gz/abc123: true\nallowBuilds:\n  stray@1.2.3: true\n`
+    expect(harvestAllowBuildKeys(mixed, spec)).toEqual([
+      'real-name@https://codeload.github.com/o/r/tar.gz/abc123',
+      'also-bound@https://codeload.github.com/o/r/tar.gz/abc123',
+    ])
+  })
+
+  it('returns [] without the build-block signature (e.g. plain network failure)', () => {
+    expect(harvestAllowBuildKeys('allowBuilds:\n  real-name@https://codeload.github.com/o/r/tar.gz/abc123: true', spec)).toEqual([])
+  })
+})
+
+describe('runEval mock.plugins allowBuilds 解锁重试', () => {
+  /**
+   * 构建拦截 fake dsh：`plugin add` 首次以 pnpm 11 的 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED
+   * 形态失败（stderr 打印 example key，keyUrl 参数控制 key 是否绑定声明 spec），
+   * 第二次要求 key 已落进 profile 的 pnpm-workspace.yaml 才成功——证明重试与写文件。
+   */
+  const writeBlockingFakeDsh = async (root: string, keyUrl: string): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh-blocking')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'if [ "$1" = "plugin" ]; then',
+        '  spec="$5"',
+        '  f="$DSH_HOME/install-attempts.txt"',
+        '  n=$(cat "$f" 2>/dev/null || echo 0)',
+        '  n=$((n+1))',
+        '  echo "$n" > "$f"',
+        '  if [ "$n" -lt 2 ]; then',
+        "    echo \"[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched from \\\"$spec\\\": The git-hosted package \\\"fake-plugin@1.0.0\\\" needs to execute build scripts but is not in the \\\"allowBuilds\\\" allowlist.\" >&2",
+        "    echo \"Add the package to \\\"allowBuilds\\\" in your project's pnpm-workspace.yaml to allow it to run scripts. For example:\" >&2",
+        '    echo "allowBuilds:" >&2',
+        `    echo "  fake-plugin@${keyUrl}: true" >&2`,
+        '    exit 1',
+        '  fi',
+        '  grep -q "fake-plugin@$spec" "$DSH_HOME/profiles/headless/pnpm-workspace.yaml" || exit 7',
+        '  exit 0',
+        'fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    return fakeBin
+  }
+
+  it('pnpm build-blocked install is unblocked by harvesting the exact key pnpm printed, then retried once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-allow-'))
+    const spec = 'https://example.test/fake-plugin.tar.gz'
+    const fakeBin = await writeBlockingFakeDsh(root, '$spec')
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(
+      join(casesDir, 'm.yml'),
+      `name: allowbuilds-unlock\nprompt: "p"\nmock:\n  fault: F0\n  plugins: ["${spec}"]\nassert:\n  tools_called: [bash]\n`,
+    )
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.status).toBe('pass')
+    const mockHome = join(out, '.mock-home', '000-allowbuilds-unlock', 'attempt-1')
+    // 恰好两次安装尝试（一次拦截 + 一次重试）
+    expect((await readFile(join(mockHome, 'install-attempts.txt'), 'utf8')).trim()).toBe('2')
+    // pnpm 自打印的精确 key（name@spec）已落进 profile 的 pnpm-workspace.yaml，模板要素保留
+    const workspaceYaml = await readFile(join(mockHome, 'profiles', 'headless', 'pnpm-workspace.yaml'), 'utf8')
+    expect(workspaceYaml).toContain(`"fake-plugin@${spec}": true`)
+    expect(workspaceYaml).toContain('nodeLinker: hoisted')
+  }, 20_000)
+
+  it('does not retry when the printed key is foreign to the declared spec (最小授权红线)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-allow-foreign-'))
+    const spec = 'https://example.test/fake-plugin.tar.gz'
+    const fakeBin = await writeBlockingFakeDsh(root, 'https://evil.example/x.tgz')
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(
+      join(casesDir, 'm.yml'),
+      `name: allowbuilds-foreign\nprompt: "p"\nmock:\n  fault: F0\n  plugins: ["${spec}"]\nassert:\n  tools_called: [bash]\n`,
+    )
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('mock.plugins')
+    expect(c.error).toContain('allowBuilds')
+    // 未重试：只有一次安装尝试，且未生成 pnpm-workspace.yaml
+    const mockHome = join(out, '.mock-home', '000-allowbuilds-foreign', 'attempt-1')
+    expect((await readFile(join(mockHome, 'install-attempts.txt'), 'utf8')).trim()).toBe('1')
+    await expect(readFile(join(mockHome, 'profiles', 'headless', 'pnpm-workspace.yaml'), 'utf8')).rejects.toThrow()
   }, 20_000)
 })
 

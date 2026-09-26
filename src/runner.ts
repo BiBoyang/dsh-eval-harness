@@ -335,8 +335,13 @@ export function buildMockSettingsYaml(baseURL: string, api: MockApi): string {
  * 跑通的 dsh-home（mock-provider/run/dsh-home）：dsh 首次运行会把 settings.yaml
  * import 进 profile 并改名 .imported——这里同时给出两处且值一致，import 幂等。
  * 不碰用户真实 ~/.dsh；dsh 版本锚点 0.1.7-rc.2。
+ *
+ * plugins（mock.plugins 声明）里可解析出 npm 包名的 spec 会预置进 profile 的
+ * pnpm-workspace.yaml allowBuilds（声明即授权该插件的构建脚本在本机执行）；
+ * 预写能被 dsh 尊重——initProfile 只在文件缺失时落默认模板（"Existing files are
+ * never touched"）。
  */
-export async function writeMockHome(home: string, profile: string, baseURL: string, api: MockApi): Promise<void> {
+export async function writeMockHome(home: string, profile: string, baseURL: string, api: MockApi, plugins: readonly string[] = []): Promise<void> {
   await mkdir(join(home, 'profiles', profile), { recursive: true })
   await writeFile(join(home, 'settings.yaml'), buildMockSettingsYaml(baseURL, api))
   await writeFile(
@@ -391,6 +396,15 @@ export async function writeMockHome(home: string, profile: string, baseURL: stri
       '',
     ].join('\n'),
   )
+  // allowBuilds 预置（TASK-allowbuilds-preset）：registry 形态（scoped/裸名）的包名
+  // 写入 profile 的 pnpm-workspace.yaml——pnpm 对 registry 包按裸名匹配构建许可。
+  // URL/git 形态包名不可推导（extractPluginPackageName 返回 null），这里不预置，
+  // 由 installMockPlugin 的拦截重试路径用 pnpm 自打印的精确 key 解锁。无可解析
+  // 包名时不写文件，让 dsh 自己落默认模板（避免无谓的模板漂移面）。
+  const allowBuildKeys = [...new Set(plugins.map(extractPluginPackageName).filter((name): name is string => name !== null))].sort()
+  if (allowBuildKeys.length > 0) {
+    await writeFile(join(home, 'profiles', profile, PROFILE_PNPM_WORKSPACE_FILENAME), buildProfilePnpmWorkspaceYaml(allowBuildKeys))
+  }
 }
 
 const PROXY_ENV_KEYS = ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'] as const
@@ -461,6 +475,120 @@ function killProcessTree(child: ChildProcess): void {
   }
 }
 
+/** dsh profile 目录里的 pnpm 设置文件名（dsh 安装器以 profile 目录为 cwd 跑 pnpm）。 */
+const PROFILE_PNPM_WORKSPACE_FILENAME = 'pnpm-workspace.yaml'
+
+/**
+ * dsh 0.1.7-rc.2 initProfile 落的默认 pnpm-workspace.yaml（锚点：dsh 仓库
+ * packages/boot/app-boot/src/profile.ts 的 PROFILE_PNPM_WORKSPACE）。hoisted linker
+ * 是外挂插件共享运行时单例 cordis 的承重点，预写/补写该文件时必须原样保留；
+ * dsh 升级后模板若变需同步此处。
+ */
+const PROFILE_PNPM_WORKSPACE_TEMPLATE = `packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+`
+
+/** YAML 双引号标量化：key 含 @ : / # 等指示符必须引号包裹（dsh 侧禁 anchors/aliases，纯标量最稳）。 */
+function yamlDoubleQuoteKey(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+/**
+ * 生成隔离 home profile 的 pnpm-workspace.yaml：dsh 默认模板 + allowBuilds 白名单
+ * （key 一律双引号）。keys 为空时退化为纯模板。
+ */
+export function buildProfilePnpmWorkspaceYaml(allowBuildKeys: readonly string[]): string {
+  if (allowBuildKeys.length === 0) return PROFILE_PNPM_WORKSPACE_TEMPLATE
+  return `${PROFILE_PNPM_WORKSPACE_TEMPLATE}\nallowBuilds:\n${allowBuildKeys.map((key) => `  ${yamlDoubleQuoteKey(key)}: true`).join('\n')}\n`
+}
+
+/**
+ * 从 mock.plugins 声明的 spec 提取 npm 包名（allowBuilds 预置的授权单元）。
+ *
+ * 只解析 registry 形态：scoped（@scope/name[@version]）与裸名（name[@version|@dist-tag]）；
+ * URL / git / file / 别名形态（含 name@url）一律返回 null——这是钉死的行为而非疏漏：
+ * pnpm 官方明确 git/tarball 依赖的裸包名永不放行构建（"a package name on its own never
+ * approves builds for a git or tarball dependency"），有效 key 必须是 name@<精确解析路径
+ * 或仓库 URL>，而包名只存在于 tarball 内部、无法从 URL 推导（routing-suite 实证：仓库名
+ * dsh-routing-suite ≠ 包名 @dsh-external/dsh-super-injector）。该形态由 installMockPlugin
+ * 的拦截重试路径用 pnpm 自打印的精确 key 解锁，不在此猜名。
+ */
+export function extractPluginPackageName(spec: string): string | null {
+  const trimmed = spec.trim()
+  // 版本/dist-tag 段不允许含 ':' 或 '/'——含了即 URL/git 形态（含 name@url 别名），非 registry spec
+  const scoped = /^(@[^/@]+\/[^/@]+)(?:@[^:/]+)?$/.exec(trimmed)
+  if (scoped) return scoped[1] ?? null
+  const bare = /^([^:@/\s]+)(?:@[^:/]+)?$/.exec(trimmed)
+  if (bare) return bare[1] ?? null
+  return null
+}
+
+/** pnpm 11 构建脚本拦截的错误签名（git 托管包 prepare 被拦，属硬错误而非可忽略构建）。 */
+const PNPM_BUILD_BLOCK_PATTERN = /ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED|not in the "allowBuilds" allowlist/
+
+/**
+ * 从安装器输出收割 pnpm 自打印的 allowBuilds 精确 key（"For example:" 后的
+ * `allowBuilds:` 块里缩进的 `<key>: true` 行）。只接受引用当前声明 spec 的 key
+ * （key 含 spec 原文子串）——授权边界 = 本用例声明的插件，输出里出现的任何其它
+ * 包都不放行（最小授权红线）。pnpm 打印的 key 形态是 name@<declared-url>（tarball）
+ * 或 name@<resolved-git-url>，包名取自 tarball 内 package.json，身份与声明 spec
+ * 绑定，不是猜测。上限 8 条防异常输出撑爆配置文件。
+ */
+export function harvestAllowBuildKeys(output: string, spec: string): string[] {
+  if (!PNPM_BUILD_BLOCK_PATTERN.test(output)) return []
+  const keys: string[] = []
+  const lines = output.split('\n')
+  for (const [i, line] of lines.entries()) {
+    if (!/^\s*allowBuilds:\s*$/.test(line)) continue
+    for (const entryLine of lines.slice(i + 1)) {
+      const m = /^\s+(\S+):\s*true\s*$/.exec(entryLine)
+      if (!m) break
+      const key = m[1] ?? ''
+      if (key.includes(spec)) keys.push(key)
+    }
+  }
+  return [...new Set(keys)].slice(0, 8)
+}
+
+/**
+ * 把收割的 allowBuilds key 合入 profile 的 pnpm-workspace.yaml：文件缺失按 dsh 默认
+ * 模板新建；已有 allowBuilds 块（含 pnpm 自动写入的占位条目）时在其条目区末尾追加，
+ * 按键去重（双引号与裸写法的同名键视为重复）。这是 dsh 手工解锁流程（plugin.ts：
+ * "add the exact key pnpm printed above under allowBuilds in <profile>/pnpm-workspace.yaml,
+ * then re-run"）的自动化——手写什么这里就写什么。
+ */
+async function addAllowBuildKeysToProfile(profileDir: string, keys: readonly string[]): Promise<void> {
+  const path = join(profileDir, PROFILE_PNPM_WORKSPACE_FILENAME)
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch {
+    text = PROFILE_PNPM_WORKSPACE_TEMPLATE
+  }
+  if (!/^allowBuilds:\s*$/m.test(text)) {
+    const base = text.endsWith('\n') ? text : `${text}\n`
+    await writeFile(path, `${base}\nallowBuilds:\n${keys.map((key) => `  ${yamlDoubleQuoteKey(key)}: true`).join('\n')}\n`)
+    return
+  }
+  const lines = text.split('\n')
+  const headerIndex = lines.findIndex((line) => /^allowBuilds:\s*$/.test(line))
+  // 现有条目区（header 后的连续缩进行）：解析键去重——引号写法与裸写法都识别
+  const existing = new Set<string>()
+  let insertAt = headerIndex + 1
+  while (insertAt < lines.length && /^\s+\S/.test(lines[insertAt] ?? '')) {
+    const m = /^\s+(?:"((?:[^"\\]|\\.)*)"|(.*?))\s*:\s*\S+\s*$/.exec(lines[insertAt] ?? '')
+    const raw = m?.[1] ?? m?.[2]
+    if (raw !== undefined) existing.add(raw.replace(/\\(["\\])/g, '$1'))
+    insertAt++
+  }
+  const additions = keys.filter((key) => !existing.has(key)).map((key) => `  ${yamlDoubleQuoteKey(key)}: true`)
+  lines.splice(insertAt, 0, ...additions)
+  await writeFile(path, lines.join('\n'))
+}
+
 /**
  * 用 dsh 自己的安装器把一个插件 spec 装进隔离 DSH_HOME 的 profile（env 与评测
  * 子进程同构）。失败/超时 throw `eval_run:` 前缀错误——调用点在 runAttemptInner
@@ -477,37 +605,57 @@ async function installMockPlugin(
 ): Promise<void> {
   const args = [...dsh.prefixArgs, ...buildPluginInstallArgs(profile, spec)]
   const command = [dsh.bin, ...args].join(' ')
-  await new Promise<void>((resolvePromise, reject) => {
-    // detached（POSIX 限定）：安装器自立进程组（pgid == 自身 pid），超时由 killProcessTree
-    // 终结整棵树——pnpm 包装器的孙进程孤儿化会握住管道让 'close' 永不触发（Windows 退化见上）
-    const child = spawn(dsh.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
-    let output = ''
-    const take = (chunk: Buffer): void => {
-      output += chunk.toString()
-      if (output.length > 8192) output = output.slice(-8192)
-    }
-    child.stdout?.on('data', take)
-    child.stderr?.on('data', take)
-    let killedByTimeout = false
-    const timer = setTimeout(() => {
-      killedByTimeout = true
-      killProcessTree(child)
-    }, timeoutMs)
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      reject(new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed to spawn '${command}': ${err.message}`))
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) {
-        resolvePromise()
-        return
+  interface InstallAttempt {
+    code: number | null
+    timedOut: boolean
+    output: string
+  }
+  /** 单次安装尝试；非零退出/超时不 throw，输出尾部留给调用方做拦截识别与报错 */
+  const runOnce = (): Promise<InstallAttempt> =>
+    new Promise((resolvePromise, reject) => {
+      // detached（POSIX 限定）：安装器自立进程组（pgid == 自身 pid），超时由 killProcessTree
+      // 终结整棵树——pnpm 包装器的孙进程孤儿化会握住管道让 'close' 永不触发（Windows 退化见上）
+      const child = spawn(dsh.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
+      let output = ''
+      const take = (chunk: Buffer): void => {
+        output += chunk.toString()
+        if (output.length > 8192) output = output.slice(-8192)
       }
-      const status = killedByTimeout ? `timed out after ${timeoutMs}ms` : `exited ${code ?? 'without an exit code'}`
-      const tail = output.trim().slice(-2000)
-      reject(new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed ('${command}' ${status})${tail ? `: ${tail}` : ''}`))
+      child.stdout?.on('data', take)
+      child.stderr?.on('data', take)
+      let killedByTimeout = false
+      const timer = setTimeout(() => {
+        killedByTimeout = true
+        killProcessTree(child)
+      }, timeoutMs)
+      child.on('error', (err) => {
+        clearTimeout(timer)
+        reject(new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed to spawn '${command}': ${err.message}`))
+      })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        resolvePromise({ code, timedOut: killedByTimeout, output })
+      })
     })
-  })
+  const failure = (attempt: InstallAttempt, retried: boolean): Error => {
+    const status = attempt.timedOut ? `timed out after ${timeoutMs}ms` : `exited ${attempt.code ?? 'without an exit code'}`
+    const tail = attempt.output.trim().slice(-2000)
+    return new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed ('${command}' ${status})${retried ? ' after allowBuilds retry' : ''}${tail ? `: ${tail}` : ''}`)
+  }
+  const first = await runOnce()
+  if (first.code === 0 && !first.timedOut) return
+  // pnpm 11 构建脚本拦截（git/tarball 插件的 prepare 需要 name@<精确路径> 的 allowBuilds
+  // key，包名无法从 spec 预知）：收割 pnpm 自打印的精确 key（只接受绑定本 spec 的，见
+  // harvestAllowBuildKeys），写进 profile 的 pnpm-workspace.yaml 后重试一次——dsh 手工
+  // 解锁流程的自动化，授权边界与手写完全一致。超时不进此路径（收割必为空，自然落原错误）。
+  // 重试给完整 timeoutMs：首次尝试通常已把包拉进 pnpm store，第二次远快。
+  const keys = first.timedOut ? [] : harvestAllowBuildKeys(first.output, spec)
+  const home = env.DSH_HOME
+  if (keys.length === 0 || home === undefined) throw failure(first, false)
+  await addAllowBuildKeysToProfile(join(home, 'profiles', profile), keys)
+  const second = await runOnce()
+  if (second.code === 0 && !second.timedOut) return
+  throw failure(second, true)
 }
 
 /**
@@ -722,7 +870,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         let childEnv: NodeJS.ProcessEnv | undefined
         if (mock) {
           const mockHome = join(outputDir, '.mock-home', dirName, `attempt-${String(attemptIndex)}`)
-          await writeMockHome(mockHome, profile, `${mock.server.baseUrl}/v1`, mock.api)
+          await writeMockHome(mockHome, profile, `${mock.server.baseUrl}/v1`, mock.api, evalCase.mock?.plugins ?? [])
           childEnv = buildMockEnv(mockHome)
           // mock.plugins：写完 home、起子进程前，逐 spec 用 dsh 安装器把被测插件
           // 装进 profile。spike 实测（dsh 0.1.7-rc.2）：安装器只做 profile 目录内的
