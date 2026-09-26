@@ -1,0 +1,14 @@
+# L3 chaos 韧性：挂载态 F4 once（对照 chaos-f4-length-truncated：检出 → exit 1 / max-tokens）
+name: modlens-chaos-f4
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F4
+  once: true
+  plugins: ["@liustack/modlens@3.26.5"]
+assert:
+  turn_end: max-tokens
+  exit_code: 1
+  output_contains: ["【Q24】"]
+  max_steps: 6

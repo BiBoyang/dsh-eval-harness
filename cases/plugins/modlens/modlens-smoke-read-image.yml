@@ -1,0 +1,18 @@
+# L2 结构性冒烟（真实 API）：README 承诺「粘贴/给出图片路径后 modlens_read_image 工具接手」。
+# oracle 断「工具注册且被调用 + 错误原样透出」：本测评机无已配置成功的 vision 引擎
+# （DeepSeek 纯文本、claude-cli 复用败于模型识别），视觉成效层记「不可判定」。
+# 运行前提：隔离 DSH_HOME（settings 指向真实 DeepSeek 端点）内
+# `dsh plugin --profile headless add @liustack/modlens@3.26.5`（版本钉死），
+# 驱动进程带 DSH_HOME=<该 home> + DEEPSEEK_API_KEY（清代理），且 /tmp/sweep-modlens/img.png 存在。
+name: modlens-smoke-read-image
+prompt: |
+  /tmp/sweep-modlens/img.png 是一张测试图片。请用 modlens_read_image 工具读取它，
+  然后告诉我图里有什么。如果工具报错，把错误原因原样告诉我，不要自己猜测图片内容。
+require_plugins: [modlens]
+tags: [plugins, smoke]
+retries: 1
+assert:
+  turn_end: completed
+  exit_code: 0
+  tools_called: [modlens_read_image]
+  max_steps: 8

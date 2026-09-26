@@ -1,0 +1,14 @@
+# L3 chaos 韧性（mock 模式，挂载 dsh-routing-suite 钉死 tarball）：与裸基线 chaos-f0-healthy 同构。
+# routing-suite 直接碰 LLM 请求管线，是最有区分度的 chaos 对照组。
+name: routing-suite-chaos-f0
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F0
+  plugins: ["https://codeload.github.com/yjh051108/dsh-routing-suite/tar.gz/195273352f23bff7f9023ebe2ec0cdbdf9c98f10"]
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P01】", "【P24】"]
+  max_steps: 6

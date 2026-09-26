@@ -1,0 +1,14 @@
+# L3 chaos 韧性：挂载态 F1 once（对照 chaos-f1-mid-stream-fin：自愈 → exit 0 / completed）
+name: modlens-chaos-f1
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F1
+  once: true
+  plugins: ["@liustack/modlens@3.26.5"]
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P24】"]
+  max_steps: 6

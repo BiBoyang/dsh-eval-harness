@@ -1,0 +1,15 @@
+# L3 chaos 韧性（mock 模式，挂载 agent-teams 0.1.21）：与裸基线 chaos-f0 同构。
+# agent-teams 是多 agent 编排插件（多并发 LLM 请求面），mock 模式下量的是挂载态宿主的
+# 单回合协议韧性。
+name: agent-teams-chaos-f0
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F0
+  plugins: ["@nanmicoder/dsh-agent-teams@0.1.21"]
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P01】", "【P24】"]
+  max_steps: 6

@@ -1,0 +1,13 @@
+# L3 chaos 韧性：挂载态 F5 once（对照 chaos-f5-think-only：阳性对照 → exit 1 / max-tokens）
+name: modlens-chaos-f5
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F5
+  once: true
+  plugins: ["@liustack/modlens@3.26.5"]
+assert:
+  turn_end: max-tokens
+  exit_code: 1
+  max_steps: 6

@@ -1,0 +1,18 @@
+# L2 结构性冒烟（真实 API）：README 承诺 14 个团队协调工具对 captain 会话直接可用
+# （无加载工具、无激活调用）。oracle 取最只读的一员：agent_teams_status（查团队状态，
+# 无团队也是有效结果）。官方推荐配对：dsh 0.1.7-rc.2 + AgentTeams 0.1.21。
+# 注意：裸名 dsh-agent-teams 在 npm 不存在（E404），真包是 scoped @nanmicoder/dsh-agent-teams。
+# 运行前提：隔离 DSH_HOME（settings 指向真实 DeepSeek 端点）内
+# dsh plugin --profile headless add --save-exact @nanmicoder/dsh-agent-teams@0.1.21。
+name: agent-teams-smoke-status
+prompt: |
+  用 agent_teams_status 工具查询当前会话的团队状态，然后把结果告诉我。
+  如果当前没有团队，直接报告没有即可，不要创建团队。
+require_plugins: [dsh-agent-teams]
+tags: [plugins, smoke]
+retries: 1
+assert:
+  turn_end: completed
+  exit_code: 0
+  tools_called: [agent_teams_status]
+  max_steps: 6

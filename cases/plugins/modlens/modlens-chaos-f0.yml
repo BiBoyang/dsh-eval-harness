@@ -1,0 +1,14 @@
+# L3 chaos 韧性（mock 模式，挂载 @liustack/modlens@3.26.5）：与裸基线 cases/chaos/chaos-f0-healthy
+# 同构，仅加 plugins 挂载。判定口径：挂载后宿主行为与裸 chaos 基线一致为绿。
+name: modlens-chaos-f0
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+tags: [plugins, chaos]
+mock:
+  fault: F0
+  plugins: ["@liustack/modlens@3.26.5"]
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P01】", "【P24】"]
+  max_steps: 6

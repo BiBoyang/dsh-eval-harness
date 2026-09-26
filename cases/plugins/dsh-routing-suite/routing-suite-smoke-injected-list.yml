@@ -1,0 +1,17 @@
+# L2 结构性冒烟（真实 API）：README/injector 文档承诺 dev_* 工具族在挂载后对 agent 可用。
+# oracle 取最只读的一员：dev_injected_list（列出注入清单，空清单也是有效结果）。
+# 注意：npm 的 dsh-routing-suite@0.1.2 是同名错位包（repository 指向 dragonbaba/…），
+# 必须用 github 源 tarball 钉死安装（spec 即下方 SHA）。
+# 运行前提：dsh plugin --profile <profile> add https://codeload.github.com/yjh051108/dsh-routing-suite/tar.gz/195273352f23bff7f9023ebe2ec0cdbdf9c98f10
+name: routing-suite-smoke-injected-list
+prompt: |
+  用 dev_injected_list 工具列出当前的插件注入清单，然后把清单内容告诉我。
+  空清单也是有效结果，不要编造条目。
+require_plugins: [dsh-routing-suite]
+tags: [plugins, smoke]
+retries: 1
+assert:
+  turn_end: completed
+  exit_code: 0
+  tools_called: [dev_injected_list]
+  max_steps: 6
