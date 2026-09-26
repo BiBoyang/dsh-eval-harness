@@ -2,6 +2,39 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- **内置确定性 mock provider**（`src/mock.ts`，零依赖）：三协议端点
+  （chat/completions、responses、messages）同挂 ephemeral 端口，F0-F5 故障矩阵
+  注入，`/__control` 支持 once（`match`/`avoid` 子串条件隔离辅助请求），逐请求
+  送达证明（字节数/事件序列/终止证人/关流方式）。Responses 截断方言为独立
+  `response.incomplete` 事件（对齐真实 API；另按黄金样本补 `response.in_progress`
+  与 `response.content_part.done` 事件）。
+- **eval_run mock 模式**：用例 yaml 新增 `mock:` 段（`fault: F0-F5`，
+  `once: bool`，`api` 三协议可选）——per-attempt ephemeral mock server、生成隔离
+  `DSH_HOME`（settings + profile patch 指向 mock，不碰真实 `~/.dsh`）、子进程 env
+  覆盖 `DSH_HOME`/`MOCK_API_KEY` 并清代理变量；attemptResults 附 `mockDelivery`
+  送达证明摘要。离线、零 token、无 flaky。
+- **`exit_code` 断言**：声明后非零退出进断言层比对（未声明的非零退出仍记 error）。
+- **`cases/chaos/` 内建故障回归包**（六条，`tags: [chaos]`）：固化 dsh
+  0.1.7-rc.2 在六种故障下的实测行为（F1-F3 断流静默自愈 exit 0；F4/F5 检出
+  length 截断 exit 1 + turn_end `max-tokens`）。全部离线可跑；行为固化≠行为背书。
+- **黄金样本校准**：`scripts/capture-golden.mjs`（凭据只读环境变量）抓取真实
+  API 样本入 `tests/fixtures/golden/`，`tests/golden.spec.ts` 离线骨架快照比对，
+  防 mock 方言漂移。
+
+### Fixed
+
+- `findSessionFile` 支持 dsh 代际命名 `session[.vN].jsonl[.zstd]`（0.1.7-rc.2 落盘
+  为 `session.v4.jsonl.zstd`，旧正则会采集全灭）。
+
+### Docs
+
+- README 新增「mock 模式与 chaos 包」一节（含诚实边界：不覆盖 judge/语义用例）
+  与 `dsh_bin` 指向源码仓库时的 `TSX_TSCONFIG_PATH` 说明。
+
 ## [0.4.0] - 2026-08-26
 
 ### Fixed
