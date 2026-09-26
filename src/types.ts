@@ -73,6 +73,13 @@ export interface MockCaseConfig {
    * 每个请求都命中，dsh 重试全部失败）。
    */
   once?: boolean
+  /**
+   * 挂载进隔离 DSH_HOME 的被测插件 spec（npm 包名或 github:spec）。版本必须
+   * 钉死（`@x.y.z` 或 `#<sha>`）——不钉的 spec 装 latest，版本漂移由用例自负。
+   * eval_run 在生成隔离 home 后用 dsh 自己的安装器（plugin add）逐 spec 安装
+   * 再起子进程；安装失败记该用例 error（含 spec 与安装器输出尾部），不中断 run。
+   */
+  plugins?: string[]
 }
 
 /** 单条评测用例 */

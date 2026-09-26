@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
+import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, buildPluginInstallArgs, filterCases, findSessionFile, parseCase, resolveDshCommand, runEval, splitDshBin } from '../src/runner.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
@@ -102,6 +102,29 @@ describe('buildDshArgs', () => {
     const i = args.indexOf('--patch')
     expect(args[i + 1]).toBe('/p.yml')
     expect(args.some((a) => a.startsWith('--patch='))).toBe(false)
+  })
+})
+
+describe('buildPluginInstallArgs', () => {
+  it('builds the dsh installer invocation: plugin --profile <profile> add <spec>', () => {
+    // dsh CLI 形态（apps/cli/src/args.ts）：plugin 子命令把剩余参数转发给 profile 目录内的 pnpm
+    expect(buildPluginInstallArgs('headless', 'dsh-find-plugin@0.4.0')).toEqual([
+      'plugin',
+      '--profile',
+      'headless',
+      'add',
+      'dsh-find-plugin@0.4.0',
+    ])
+  })
+
+  it('keeps github specs verbatim (spec 不做任何改写，交给 dsh 安装器解析)', () => {
+    expect(buildPluginInstallArgs('tui', 'github:owner/repo#abc123')).toEqual([
+      'plugin',
+      '--profile',
+      'tui',
+      'add',
+      'github:owner/repo#abc123',
+    ])
   })
 })
 
@@ -907,6 +930,18 @@ describe('parseCase mock + exit_code', () => {
     expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  once: "yes"\nassert:\n  max_steps: 3\n', 'm.yml')).toThrow(/mock\.once' must be a boolean/)
   })
 
+  it('parses mock.plugins (list of specs) and omits it when not set', () => {
+    const c = parseCase('name: m\nprompt: "p"\nmock:\n  fault: F0\n  plugins: [dsh-find-plugin@0.4.0]\nassert:\n  max_steps: 3\n', 'm.yml')
+    expect(c.mock).toEqual({ fault: 'F0', plugins: ['dsh-find-plugin@0.4.0'] })
+    expect(parseCase('name: m\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  max_steps: 3\n', 'm.yml').mock).toEqual({ fault: 'F0' })
+  })
+
+  it('rejects mock.plugins that is not a list of non-empty strings', () => {
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  plugins: dsh-find-plugin\nassert: {}\n', 'm.yml')).toThrow(/mock\.plugins' must be a list of non-empty strings/)
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  plugins: [1]\nassert: {}\n', 'm.yml')).toThrow(/mock\.plugins' must be a list of non-empty strings/)
+    expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  plugins: [""]\nassert: {}\n', 'm.yml')).toThrow(/mock\.plugins' must be a list of non-empty strings/)
+  })
+
   it('rejects invalid fault / api values', () => {
     expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  fault: F9\nassert: {}\n', 'm.yml')).toThrow(/mock\.fault' must be one of F0-F5/)
     expect(() => parseCase('name: m\nprompt: "p"\nmock:\n  api: xml-rpc\nassert: {}\n', 'm.yml')).toThrow(/mock\.api' must be one of/)
@@ -1137,5 +1172,105 @@ describe('runEval mock mode', () => {
     } else {
       expect(plainEnv).toContain(`DSH_HOME=${process.env.DSH_HOME}`)
     }
+  }, 20_000)
+})
+
+describe('runEval mock.plugins (挂载被测插件)', () => {
+  /**
+   * plugin-aware fake dsh：
+   * - `--version` 探针照常；
+   * - `plugin` 子命令（安装器调用）：把 argv 与关键 env 记进 $DSH_HOME 下，
+   *   installExit=0 成功；非 0 时向 stdout/stderr 各打一段错误文案后退出；
+   * - 评测调用：要求 install-log.txt 已存在（安装先于子进程的顺序证明，否则
+   *   exit 5），打一次 mock，落过测 trace。
+   */
+  const writePluginFakeDsh = async (root: string, installExit = 0): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh-plugin')
+    const lines = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'if [ "$1" = "plugin" ]; then',
+      '  printf \'%s\\n\' "$*" >> "$DSH_HOME/install-log.txt"',
+      '  env | grep -E "^(DSH_HOME|MOCK_API_KEY|http_proxy|HTTP_PROXY)=" > "$DSH_HOME/install-env.txt" || true',
+    ]
+    if (installExit !== 0) {
+      lines.push(`echo "404 not found: no-such-plugin@9.9.9"`, `echo "dsh: plugin command failed; diagnostics: /x/pnpm.log" >&2`, `exit ${installExit}`)
+    } else {
+      lines.push('exit 0')
+    }
+    lines.push(
+      'fi',
+      // 顺序证明仅对带插件的用例生效（prompt 标记）：安装未发生即起子进程 → exit 5
+      'case "$5" in *install-required*) [ -f "$DSH_HOME/install-log.txt" ] || exit 5 ;; esac',
+      'base=$(sed -n \'s/^ *baseURL: \\(.*\\)$/\\1/p\' "$DSH_HOME/settings.yaml")',
+      'curl -sS -N -X POST -H \'content-type: application/json\' -d \'{"model":"mock-model","stream":true}\' "$base/chat/completions" >/dev/null',
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+      'exit 0',
+      '',
+    )
+    await writeFile(fakeBin, lines.join('\n'), { mode: 0o755 })
+    return fakeBin
+  }
+
+  it('installs each spec via the dsh installer into the isolated home, before the eval subprocess', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mplg-'))
+    const fakeBin = await writePluginFakeDsh(root)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(
+      join(casesDir, 'm.yml'),
+      'name: mock-with-plugins\nprompt: "install-required"\nmock:\n  fault: F0\n  plugins: [dsh-find-plugin@0.4.0, demo-plugin@1.2.3]\nassert:\n  tools_called: [bash]\n',
+    )
+
+    const out = join(root, 'out')
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+
+    // 用例本身照常过（插件挂载不改变 mock 流），送达证明照常记录
+    const c = report.cases[0]
+    expect(c?.status).toBe('pass')
+    expect(c?.attemptResults[0]?.mockDelivery).toHaveLength(1)
+
+    // 安装器按声明顺序逐 spec 调用，argv 形态 = plugin --profile headless add <spec>
+    const mockHome = join(out, '.mock-home', '000-mock-with-plugins', 'attempt-1')
+    const installLog = (await readFile(join(mockHome, 'install-log.txt'), 'utf8')).trim().split('\n')
+    expect(installLog).toEqual([
+      'plugin --profile headless add dsh-find-plugin@0.4.0',
+      'plugin --profile headless add demo-plugin@1.2.3',
+    ])
+    // 安装器 env 与评测子进程同构：DSH_HOME 指向隔离 home、MOCK_API_KEY 就位、代理已清
+    const installEnv = await readFile(join(mockHome, 'install-env.txt'), 'utf8')
+    expect(installEnv).toContain(`DSH_HOME=${mockHome}`)
+    expect(installEnv).toContain('MOCK_API_KEY=mock')
+    expect(installEnv).not.toMatch(/http_proxy=|HTTP_PROXY=/)
+  }, 20_000)
+
+  it('a failing install records a case-level error with spec + installer output tail, without breaking the run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-mplgf-'))
+    const fakeBin = await writePluginFakeDsh(root, 4)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(
+      join(casesDir, 'a.yml'),
+      'name: install-broken\nprompt: "install-required"\nmock:\n  fault: F0\n  plugins: [no-such-plugin@9.9.9]\nassert:\n  tools_called: [bash]\n',
+    )
+    await writeFile(join(casesDir, 'b.yml'), 'name: healthy-peer\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
+
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+
+    // 安装失败是数据不是崩溃：该用例 error（消息含 spec、命令形态与输出尾部），
+    // 同 run 的其他用例照常执行
+    const broken = report.cases[0]
+    expect(broken?.status).toBe('error')
+    expect(broken?.attempts).toBe(1)
+    expect(broken?.error).toContain("install of 'no-such-plugin@9.9.9' failed")
+    expect(broken?.error).toContain('plugin --profile headless add no-such-plugin@9.9.9')
+    expect(broken?.error).toContain('exited 4')
+    expect(broken?.error).toContain('404 not found')
+    expect(broken?.error).toContain('diagnostics: /x/pnpm.log')
+    expect(report.cases[1]?.status).toBe('pass')
+    expect(report.summary.errored).toBe(1)
   }, 20_000)
 })

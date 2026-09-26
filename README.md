@@ -55,6 +55,7 @@ mock:                           # 可选，mock 模式（见下节；不用真�
   fault: F4                     #   注入故障形态 F0-F5（缺省 F0）
   api: openai-completions       #   协议端点：openai-completions / openai-responses / anthropic-messages（缺省 openai-completions）
   once: true                    #   可选，一次性故障：仅首个 LLM 请求命中，此后回 F0（横评矩阵语义）
+  plugins: [dsh-find-plugin@0.4.0]  # 可选，挂载被测插件（见下节；版本必须钉死）
 assert:
   turn_end: completed           # turn/end 事件的 reason.kind
   exit_code: 0                  # 可选，dsh 子进程退出码；声明后非零退出进断言层比对（不再直接记 error）
@@ -114,6 +115,15 @@ ephemeral mock provider（127.0.0.1 随机端口，用后即收），生成隔�
   （阳性对照）。
 - **once 语义**：`once: true` 时仅首个 LLM 请求命中故障、此后回 F0——dsh 的断流
   重试会走健康流（横评矩阵即此口径）；缺省为持续注入（每次请求都命中）。
+- **plugins 挂载**：`mock.plugins` 声明被测插件 spec（npm 包名或 `github:` 形态），
+  eval_run 生成隔离 `DSH_HOME` 后、起子进程前，**用 dsh 自己的安装器**
+  （`dsh plugin --profile headless add <spec>`，env 与评测子进程同构）逐 spec 装进
+  headless profile——保真度最高（与真实安装路径完全一致），且天然把「安装成功率」
+  纳入评测数据。**版本必须钉死**（`@x.y.z` 或 `#<sha>`）：不钉的 spec 装 latest，
+  版本漂移（上游发新版/删包）造成的红自己负责。安装需要网络属预期（本工具不做
+  离线安装；本地路径 spec 由 pnpm 原生支持，转发安装器即继承）。**安装失败是用例
+  级 error 而非 run 崩溃**：该用例记 error（消息含 spec、安装命令与安装器输出
+  尾部），同 run 其他用例照常执行——安装失败是数据，不是事故。
 - **送达证明**：报告 attempt 级附 `mockDelivery`（每 LLM 请求一条：端口、fault、
   事件数、字节数、终止证人送达情况、关流方式）——"故障确实送达"可证，排除
   "故障没送达导致的假绿/假红"。空数组同样是信号：dsh 根本没打到 mock。

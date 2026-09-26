@@ -103,10 +103,16 @@ export function parseCase(text: string, file: string): EvalCase {
     if (m.once !== undefined && typeof m.once !== 'boolean') {
       throw new Error(`${PREFIX}: failed to parse case file '${file}': 'mock.once' must be a boolean`)
     }
+    if (m.plugins !== undefined) {
+      if (!Array.isArray(m.plugins) || m.plugins.some((p) => typeof p !== 'string' || p.trim() === '')) {
+        throw new Error(`${PREFIX}: failed to parse case file '${file}': 'mock.plugins' must be a list of non-empty strings`)
+      }
+    }
     mock = {
       ...(m.fault === undefined ? {} : { fault: m.fault as MockFault }),
       ...(m.api === undefined ? {} : { api: m.api as MockApi }),
       ...(m.once === undefined ? {} : { once: m.once }),
+      ...(m.plugins === undefined ? {} : { plugins: m.plugins as string[] }),
     }
   }
   if (!raw.assert || typeof raw.assert !== 'object' || Array.isArray(raw.assert)) {
@@ -400,6 +406,58 @@ function buildMockEnv(mockHome: string): NodeJS.ProcessEnv {
   return env
 }
 
+/** dsh 安装器子进程参数：`plugin --profile <profile> add <spec>`（转发给 profile 目录内的 pnpm） */
+export function buildPluginInstallArgs(profile: string, spec: string): string[] {
+  return ['plugin', '--profile', profile, 'add', spec]
+}
+
+/**
+ * 用 dsh 自己的安装器把一个插件 spec 装进隔离 DSH_HOME 的 profile（env 与评测
+ * 子进程同构）。失败/超时 throw `eval_run:` 前缀错误——调用点在 runAttemptInner
+ * 的 try 内，天然落成该用例的 attempt error（消息含 spec 与安装器输出尾部），
+ * 不中断整个 run。安装需要网络属预期；pnpm 经 PATH 解析（dsh 侧行为）。
+ */
+async function installMockPlugin(
+  dsh: DshCommand,
+  profile: string,
+  spec: string,
+  cwd: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const args = [...dsh.prefixArgs, ...buildPluginInstallArgs(profile, spec)]
+  const command = [dsh.bin, ...args].join(' ')
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(dsh.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    const take = (chunk: Buffer): void => {
+      output += chunk.toString()
+      if (output.length > 8192) output = output.slice(-8192)
+    }
+    child.stdout?.on('data', take)
+    child.stderr?.on('data', take)
+    let killedByTimeout = false
+    const timer = setTimeout(() => {
+      killedByTimeout = true
+      child.kill('SIGKILL')
+    }, timeoutMs)
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      reject(new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed to spawn '${command}': ${err.message}`))
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolvePromise()
+        return
+      }
+      const status = killedByTimeout ? `timed out after ${timeoutMs}ms` : `exited ${code ?? 'without an exit code'}`
+      const tail = output.trim().slice(-2000)
+      reject(new Error(`${PREFIX}: mock.plugins: install of '${spec}' failed ('${command}' ${status})${tail ? `: ${tail}` : ''}`))
+    })
+  })
+}
+
 /**
  * 在 sessionRoot 下递归找本次用例落盘的会话日志，文件名匹配
  * `session[.vN].jsonl[.zstd]`（dsh 的代际命名：旧版 session.jsonl(.zstd)，
@@ -611,6 +669,14 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
           const mockHome = join(outputDir, '.mock-home', dirName, `attempt-${String(attemptIndex)}`)
           await writeMockHome(mockHome, profile, `${mock.server.baseUrl}/v1`, mock.api)
           childEnv = buildMockEnv(mockHome)
+          // mock.plugins：写完 home、起子进程前，逐 spec 用 dsh 安装器把被测插件
+          // 装进 profile。spike 实测（dsh 0.1.7-rc.2）：安装器只做 profile 目录内的
+          // pnpm add，不要求 settings.yaml import / 首次初始化完成——「安装在 import
+          // 之前」可行且即本实现所选顺序（import 由随后的子进程首次启动完成）。
+          // 失败 throw → 本 attempt 记 error（含 spec 与安装器输出尾部），run 不中断
+          for (const spec of evalCase.mock?.plugins ?? []) {
+            await installMockPlugin(dsh, profile, spec, workspace, timeoutMs, childEnv)
+          }
         }
         const proc = await runOne(dsh.bin, [...dsh.prefixArgs, ...buildDshArgs(profile, overlayPath, evalCase.prompt)], workspace, timeoutMs, childEnv)
         const procFields = processFields(proc)
