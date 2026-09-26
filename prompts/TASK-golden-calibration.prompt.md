@@ -1,6 +1,6 @@
 ---
 task: /Users/boyang/Desktop/dsh-eval-harness/plans/TASK-golden-calibration.md
-status: pending
+status: done
 from: Planner
 to: Executor
 created: 2026-09-26
