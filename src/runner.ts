@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
@@ -412,6 +413,55 @@ export function buildPluginInstallArgs(profile: string, spec: string): string[] 
 }
 
 /**
+ * 终结以 child 为根的整棵子进程树（POSIX 进程组杀）。
+ *
+ * 为什么需要：只 SIGKILL 直接子进程时，包装器形态（`pnpm -C … dsh`、`bash -c …`）
+ * 的孙进程孤儿化并继续握住 stdio 管道，'close' 事件等不到 EOF，runner 永挂
+ * （实战挂死 34 分钟，见 .eval/plugin-check-2026-09-26/SUMMARY.md 环境节 4）。
+ *
+ * 负 pid 杀组的前提与安全性：child 必须是 `detached: true` spawn 的——POSIX 下
+ * Node 对其调 setsid(2)，子进程自立会话与进程组且 pgid == child.pid。发 SIGKILL
+ * 前先用信号 0 探测 `-pid`：pgid 是组长的 pid，拥有该 pid 的进程只有 child 自己，
+ * 故探测成功 ⟺ 「组 id == 该子进程 pid」的组确实存在；此时 kill(-pid) 命中的必然
+ * 是这棵树的组，绝不可能误杀 harness 自身所在的组（harness 的 pgid 继承自父
+ * shell，不等于任何后代 pid；且本函数只在 'close' 触发前的超时路径被调用，pid
+ * 不会被回收重用——组内只要有成员存活，该 pgid 就仍被占用）。非 detached spawn
+ * 的子进程禁止传入：那时子进程与 harness 同组，-pid 语义不再成立。
+ *
+ * Windows 退化：无 POSIX 进程组语义，Node 的 detached 含义不同且不支持负 pid
+ * 杀组，退回只杀直接子进程（孙进程可能孤儿化）；等价语义候选
+ * `taskkill /pid <pid> /T /F`——按任务契约为非目标，不在此实现。
+ */
+function killProcessTree(child: ChildProcess): void {
+  const pid = child.pid
+  if (typeof pid !== 'number') return
+  if (process.platform === 'win32') {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // 已退出：忽略
+    }
+    return
+  }
+  try {
+    process.kill(-pid, 0)
+  } catch {
+    // 组已随整棵树终结而消失（正常竞态）——直接子进程此时也必然已死
+    return
+  }
+  try {
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    // 探测与发信号之间树已退出：退回只杀直接子进程兜底，不掩盖主流程
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // 已退出：忽略
+    }
+  }
+}
+
+/**
  * 用 dsh 自己的安装器把一个插件 spec 装进隔离 DSH_HOME 的 profile（env 与评测
  * 子进程同构）。失败/超时 throw `eval_run:` 前缀错误——调用点在 runAttemptInner
  * 的 try 内，天然落成该用例的 attempt error（消息含 spec 与安装器输出尾部），
@@ -428,7 +478,9 @@ async function installMockPlugin(
   const args = [...dsh.prefixArgs, ...buildPluginInstallArgs(profile, spec)]
   const command = [dsh.bin, ...args].join(' ')
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(dsh.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    // detached（POSIX 限定）：安装器自立进程组（pgid == 自身 pid），超时由 killProcessTree
+    // 终结整棵树——pnpm 包装器的孙进程孤儿化会握住管道让 'close' 永不触发（Windows 退化见上）
+    const child = spawn(dsh.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
     let output = ''
     const take = (chunk: Buffer): void => {
       output += chunk.toString()
@@ -439,7 +491,7 @@ async function installMockPlugin(
     let killedByTimeout = false
     const timer = setTimeout(() => {
       killedByTimeout = true
-      child.kill('SIGKILL')
+      killProcessTree(child)
     }, timeoutMs)
     child.on('error', (err) => {
       clearTimeout(timer)
@@ -515,6 +567,9 @@ function runOne(
       cwd,
       env,
       stdio: ['ignore', 'ignore', 'pipe'],
+      // detached（POSIX 限定）：子进程自立进程组（pgid == 自身 pid），超时由 killProcessTree
+      // 终结整棵树；正常路径（无超时）语义不变，Windows 退化见 killProcessTree 注释
+      detached: process.platform !== 'win32',
     })
     let stderr = ''
     let killedByTimeout = false
@@ -524,7 +579,7 @@ function runOne(
     })
     const timer = setTimeout(() => {
       killedByTimeout = true
-      child.kill('SIGKILL')
+      killProcessTree(child)
     }, timeoutMs)
     child.on('error', (err) => {
       clearTimeout(timer)

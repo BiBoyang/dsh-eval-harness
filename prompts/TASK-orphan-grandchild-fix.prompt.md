@@ -1,6 +1,6 @@
 ---
 task: /Users/boyang/Desktop/dsh-eval-harness/plans/TASK-orphan-grandchild-fix.md
-status: pending
+status: dispatched
 from: Planner
 to: Executor
 created: 2026-09-27

@@ -454,6 +454,116 @@ describe('runEval timeout', () => {
   }, 15_000)
 })
 
+describe('runEval timeout kills the whole process tree (POSIX)', () => {
+  // TASK-orphan-grandchild-fix 回归：包装器形态（`pnpm -C … dsh`、`bash -c …`）下只
+  // SIGKILL 直接子进程会让孙进程孤儿化、继续握住 stdio 管道 → 'close' 永不触发 →
+  // runner 永挂（实战挂死 34 分钟）。修复：detached spawn + 负 pid 进程组杀。Windows
+  // 无等价 POSIX 进程组语义（退化路径见 src/runner.ts killProcessTree 注释），本组跳过。
+
+  /** kill -0 轮询探测进程死亡（吸收 SIGKILL 投递的微小竞态）；2s 内未死判失败。 */
+  const waitProcessDead = async (pid: number): Promise<boolean> => {
+    for (let i = 0; i < 40; i++) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        return true
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    return false
+  }
+
+  const readGrandchildPid = async (pidFile: string): Promise<number> => {
+    const pid = Number((await readFile(pidFile, 'utf8')).trim())
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error(`bad grandchild pid file '${pidFile}'`)
+    return pid
+  }
+
+  it.skipIf(process.platform === 'win32')('eval subprocess timeout: orphaned grandchild dies and the runner returns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-orphan-'))
+    const pidFile = join(root, 'grandchild.pid')
+    // fake dsh：落部分 trace 后孵化一个继承 stderr 管道并长睡的孙进程，自己 exec 长睡
+    // 等超时——旧实现只杀直接子进程时孙进程握住管道，runOne 的 'close' 永不触发
+    const fakeBin = join(root, 'fake-dsh-orphan')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+        'dir="$root/case/session-fake"',
+        'mkdir -p "$dir"',
+        "printf '%s\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+        'sleep 60 &',
+        'echo $! > "$ORPHAN_GC_PIDFILE"',
+        'exec sleep 60',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 't.yml'), 'name: orphan-grandchild\nprompt: "hang"\nassert:\n  tools_called: [bash]\n')
+
+    process.env.ORPHAN_GC_PIDFILE = pidFile
+    const started = Date.now()
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 }).finally(() => {
+      delete process.env.ORPHAN_GC_PIDFILE
+    })
+    // (a) runner 在超时后有限时间内返回（旧实现此处永挂，由 vitest 超时兜底判红）
+    expect(Date.now() - started).toBeLessThan(10_000)
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    // (c) 错误消息仍含 timed out 语义
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('timed out')
+    expect(c.timedOut).toBe(true)
+    // (b) 孙进程已随进程组被杀（kill -0 探测）
+    expect(await waitProcessDead(await readGrandchildPid(pidFile))).toBe(true)
+  }, 20_000)
+
+  it.skipIf(process.platform === 'win32')('installer subprocess timeout (mock.plugins): orphaned grandchild dies and the attempt errors out', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-orphan-install-'))
+    const pidFile = join(root, 'grandchild.pid')
+    // 同上，但挂死点在 installMockPlugin 的安装器子进程（plugin 子命令）：两处 spawn 点同修
+    const fakeBin = join(root, 'fake-dsh-orphan-install')
+    await writeFile(
+      fakeBin,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+        'if [ "$1" = "plugin" ]; then',
+        '  sleep 60 &',
+        '  echo $! > "$ORPHAN_GC_PIDFILE"',
+        '  exec sleep 60',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(
+      join(casesDir, 'm.yml'),
+      'name: orphan-install\nprompt: "p"\nmock:\n  fault: F0\n  plugins: [demo-plugin@1.2.3]\nassert:\n  tools_called: [bash]\n',
+    )
+
+    process.env.ORPHAN_GC_PIDFILE = pidFile
+    const started = Date.now()
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 }).finally(() => {
+      delete process.env.ORPHAN_GC_PIDFILE
+    })
+    expect(Date.now() - started).toBeLessThan(10_000)
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('timed out')
+    expect(c.error).toContain('mock.plugins')
+    expect(await waitProcessDead(await readGrandchildPid(pidFile))).toBe(true)
+  }, 20_000)
+})
+
 describe('runEval process exit status', () => {
   it('keeps a passing trace but reports error when dsh exits non-zero', async () => {
     const root = await mkdtemp(join(tmpdir(), 'eval-exit-'))
