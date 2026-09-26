@@ -2,6 +2,32 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-09-27
+
+### Added
+
+- **`mock.plugins` 挂载被测插件**：用例 `mock:` 段新增 `plugins: [...]`——eval_run 生成
+  隔离 `DSH_HOME` 后、起子进程前，用 dsh 自己的安装器（`plugin add`，保真度与真实安装
+  路径一致）把声明的插件装进 headless profile；安装失败记该用例 error（含 spec 与安装器
+  输出尾部），不中断整个 run。安装成功率由此成为评测数据的第一层漏斗。版本必须钉死
+  （`@x.y.z` 或 `#<sha>`）。
+- **allowBuilds 预置与解锁**：「需 prepare 构建」的插件（pnpm 11 默认拦截构建）可挂载
+  评测——registry 形态按声明包名在隔离 profile 预置 `allowBuilds`；URL/tarball 形态
+  （pnpm 语义下无法按包名预授权）走构建拦截识别 → 收割 pnpm 自打印的精确 key（仅含本
+  spec 子串、上限 8 条）→ 合入配置重试一次的混合路径。授权边界与 dsh 手工解锁同构；
+  README 写明「声明即授权其构建脚本在本机执行」。
+
+### Fixed
+
+- **超时终结整棵子进程树**：runOne 与 installMockPlugin 的超时 SIGKILL 此前只杀直接
+  子进程——包装器形态 dsh_bin（`pnpm -C … dsh` 等）的孙进程孤儿化占住 stdio 管道，
+  runner 永挂（实战撞出 34 分钟）。改为 `detached` 进程组 + 组属探测后负 pid 组杀
+  （杜绝误杀自身组）；win32 维持旧行为并注释标注退化路径。
+
+### Docs
+
+- README mock 章节补 `plugins` 挂载、allowBuilds 语义与风险句、版本钉死纪律。
+
 ## [0.5.0] - 2026-09-26
 
 ### Added
