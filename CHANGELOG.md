@@ -2,6 +2,27 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- **`eval_tps_run`：长上下文瞬时 TPS 衰减横评**（`src/tps.ts`）。不走 agent 会话，
+  直接打 OpenAI 兼容 streaming 端点：按名义上下文台阶发受控请求（填料造长度、
+  默认 cache_bust 强制 prefix cache miss、temperature/max_output_tokens 钉死输出侧），
+  逐 chunk 计时采**瞬时** decode TPS，context_len 以服务端 usage 为准（原始 usage
+  逐样本落盘；usage 缺失降级字符估算并标记）。拟合 `tps(n) = 1/(a + b·n)` 报基准
+  速度、b（KV 效率，跨模型比较核心量）、半速点 n½（compact 阈值锚点）；R²<0.9 或
+  衰减超双曲（a<=0）时给「看实测点」提示而非硬拟合。`budget_tokens` 必填（计划
+  超预算拒跑，跑中超预算截断标记），`dry_run` 出计划不发请求，可选 anchors 锚点
+  召回出保真衰减第二曲线。全程串行（并行污染测量）。报告口径警示内建：数字只对
+  当次部署负责，横评是部署结论不是架构结论。
+
+### Compatibility
+
+- 已验证 **dsh 0.2.0-rc.2** 兼容：chaos 套件（F0-F5）复跑 6/6 通过（session trace
+  格式、headless 挂载、断流重试语义均未变）；插件在隔离 DSH_HOME 下安装并启动
+  headless runtime 无错误。`@deepseek-ai/dsh-*` 库依赖仍为 0.0.1-rc.1，无需升级。
+
 ## [0.6.0] - 2026-09-27
 
 ### Added

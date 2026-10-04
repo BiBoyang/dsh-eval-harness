@@ -1,0 +1,22 @@
+# eval_tps_run 配置示例（长上下文 TPS 衰减横评）
+# 运行前先 dry_run 看预算：planned_tokens 超 budget_tokens 会拒跑。
+
+models:
+  - name: deepseek-chat          # 报告里的展示名
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY  # 缺省即 DEEPSEEK_API_KEY
+    model: deepseek-chat
+  # 阳性对照：带一个已知陡衰减的模型，验证测量通道能区分陡与平
+  # - name: some-gpt
+  #   base_url: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  #   model: gpt-5
+
+steps: [8000, 16000, 32000, 64000]   # 名义上下文台阶（升序）；实测以 usage.prompt_tokens 为准
+repeats: 3                            # 每台阶重复次数（中位数抗抖动）
+max_output_tokens: 512                # 输出侧钉死：decode 测量窗口
+temperature: 0
+anchors: false                        # true 时每台阶追加锚点召回请求（保真衰减曲线）
+cache_bust: true                      # 每请求随机 nonce 强制 prefix cache miss（横评口径一致的前提）
+budget_tokens: 1500000                # 必填，预算前置声明：计划估算超了直接拒跑
+request_timeout_ms: 300000

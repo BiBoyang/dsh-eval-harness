@@ -4,6 +4,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { computeGate, loadReport, renderGateJson, renderGateText } from './gate.js'
 import { validateJudge } from './judge.js'
 import { runEval } from './runner.js'
+import { runTpsEval } from './tps.js'
 
 export const name = 'dsh-eval-harness'
 export const inject = ['tools']
@@ -191,6 +192,64 @@ export function apply(ctx: Context): void {
       },
       // 校准集是几十条量级的串行短调用，但 judge 走外部 API，预算放宽
       timeoutMs: 600_000,
+    }),
+  )
+
+  ctx.tools.register(
+    defineTool({
+      name: 'eval_tps_run',
+      description:
+        'Measure long-context instantaneous decode TPS decay: for each model in the yaml config, fire controlled streaming requests at nominal context steps (filler text built to size, cache-busted by default, output side pinned by max_output_tokens/temperature), record per-chunk timing + raw usage, then fit tps(n) = 1/(a + b·n) and report the half-speed context n_half. Writes tps-report.json + tps-report.md to output_dir. budget_tokens is mandatory — planned estimate above budget refuses to run; use dry_run to preview the plan. Numbers describe the measured deployment (provider + endpoint + date), not the architecture.',
+      parameters: {
+        config_path: {
+          type: 'string',
+          required: true,
+          description:
+            'Path to the tps yaml config: models (name/base_url/model/api_key_env), steps (ascending nominal context tokens), repeats, max_output_tokens, temperature, anchors, cache_bust, budget_tokens (required), request_timeout_ms.',
+        },
+        output_dir: {
+          type: 'string',
+          required: true,
+          description: 'Directory where tps-report.json and tps-report.md are written.',
+        },
+        dry_run: {
+          type: 'boolean',
+          default: false,
+          description: 'Only print the plan (request count + planned token estimate); send nothing, write nothing.',
+        },
+        only: {
+          type: 'string',
+          description: 'Comma-separated model display names: only run these (exact match).',
+        },
+      },
+      output: { schema: { type: 'string' }, render: renderJsonText },
+      execute: async (args) => {
+        const result = await runTpsEval({
+          configPath: String(args.config_path),
+          outputDir: String(args.output_dir),
+          dryRun: args.dry_run === true,
+          only:
+            args.only === undefined
+              ? undefined
+              : String(args.only).split(',').map((s) => s.trim()).filter((s) => s !== ''),
+        })
+        if (result.report === null) {
+          return JSON.stringify({ dry_run: true, request_count: result.requestCount, planned_tokens: result.plannedTokens })
+        }
+        return JSON.stringify({
+          report_json: result.reportJsonPath,
+          report_md: result.reportMdPath,
+          budget: result.report.budget,
+          models: result.report.models.map((m) => ({
+            name: m.name,
+            half_speed_context: m.fit?.halfSpeedContext ?? null,
+            baseline_tps: m.fit?.baselineTps ?? null,
+            b: m.fit?.b ?? null,
+          })),
+        })
+      },
+      // TPS 横评按预算上限跑，台阶多 × repeats 时耗时可观；单请求另有 request_timeout_ms
+      timeoutMs: 3_600_000,
     }),
   )
 }

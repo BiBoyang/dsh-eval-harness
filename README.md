@@ -32,6 +32,7 @@ dsh --profile headless --dump-config | grep dsh-eval-harness
 | `eval_run` | 跑 cases_dir 下全部用例：headless 驱动真实 agent → 采集 session trace → 断言 → 写 report.json/report.md |
 | `eval_gate` | 对比 baseline 与本次报告，输出门禁判定（OVERALL/EXIT_CODE），strict 模式收紧 WARN 退出码 |
 | `eval_judge_validate` | 在人工标注集上校准 LLM judge：报混淆矩阵与 TPR/TNR（分开看，agreement 会骗人），双指标达标才算 calibrated |
+| `eval_tps_run` | 长上下文瞬时 TPS 衰减横评：受控台阶请求打 OpenAI 兼容流式端点，拟合 tps(n)=1/(a+b·n)，报半速点 n½ 与横评表 |
 
 ### Skills
 
@@ -229,6 +230,62 @@ TPR 与 TNR 分开看：标注集里 90% 都是 pass 时，什么都放行的橡
 4. **进门禁**：校准通过后，`output_judge` 的判定才可以信。
 5. **重新校准的触发时机**：judge 模型更换（`EVAL_JUDGE_MODEL`）、harness 升级动了
    judge prompt、被评输出的数据分布明显变化（比如换了被测模型）。
+
+### eval_tps_run
+
+长上下文 TPS 标定与横评（不走 agent 会话，直接打 OpenAI 兼容 streaming 端点）：
+对每个模型按名义上下文台阶（8k/16k/32k/…）发受控请求，逐 chunk 计时，
+拟合 `tps(n) = 1/(a + b·n)`，报每个模型的基准速度、KV 效率参数 b、半速点 n½
+（瞬时 TPS 掉到基准一半的上下文长度——建议的 compact 阈值锚点）与横评表。
+
+```yaml
+# tps.yml（完整示例见 examples/tps.example.yml）
+models:
+  - name: deepseek-chat          # 展示名（横评表行名）
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY  # 读 key 的环境变量，缺省 DEEPSEEK_API_KEY
+    model: deepseek-chat
+steps: [8000, 16000, 32000, 64000]  # 名义台阶（升序）；实测 context 以 usage.prompt_tokens 为准
+repeats: 3                  # 每台阶重复次数（聚合取中位数）
+max_output_tokens: 512      # 输出侧钉死：decode TPS 也是输出侧的函数
+temperature: 0
+anchors: false              # true 时每台阶追加锚点召回请求，同数据出「保真衰减」第二曲线
+cache_bust: true            # 每请求随机 nonce 强制 prefix cache miss；关掉等于各家各测各的口径
+budget_tokens: 1500000      # 必填。计划估算超了拒跑；跑中实际用量超了停止发新请求（报告标 truncated）
+request_timeout_ms: 300000
+```
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `config_path` | string | 是 | - | 上述 yaml 配置路径 |
+| `output_dir` | string | 是 | - | tps-report.json / tps-report.md 输出目录 |
+| `dry_run` | bool | 否 | false | 只出计划（请求数 + 计划 token 估算），不发请求不写文件 |
+| `only` | string | 否 | - | 逗号分隔模型展示名，只跑这些 |
+
+**口径纪律**（横评数据的可信度全在这里）：
+
+- 采**瞬时** TPS（completion_tokens / decode 时长），不采均速——均速把 prefill
+  和早期快段摊进来，系统性高估长上下文端；
+- context_len 以服务端 `usage.prompt_tokens` 为准，原始 usage 逐样本落盘
+  （口径日后可重算）；provider 不回 usage 时按字符估算并标 `estimatedTokens=true`
+  ——降级口径只能看曲线形状，别看绝对值；
+- `cache_bust` 默认开：不同 provider 的 prefix cache 策略/TTL 不同，不强制 miss
+  则跨家数字不可比；
+- **串行执行**：并行会被 provider 侧 batch 与本地事件循环污染，永不并行；
+- **预算前置**：`budget_tokens` 必填，超了拒跑，不接受事后补账。
+
+**读数纪律**：
+
+- 数字只对当次部署（provider + endpoint + 测量日期）负责——服务端硬件、batch、
+  限速不可见。**横评表是部署结论，不是架构结论**，引用数据时这句话必须跟着走；
+- 每次横评带一个已知陡衰减的模型作**阳性对照**：测不出衰减时先怀疑测量通道，
+  再相信架构；
+- 拟合 R² < 0.9 或报「衰减比双曲模型还陡」时，说明曲线有膝盖（KV 换页/限速
+  切换）——按实测点读，别信外推。
+
+**这个工具不覆盖**：真实 agent 负载的衰减（那是「标定 skill」路线的事——真实
+会话的上下文构成与增长节奏和合成台阶不同，本工具的绝对数字会偏，横评相对比较
+仍然有效）。
 
 ### eval_gate
 
