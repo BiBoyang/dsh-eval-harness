@@ -1,0 +1,14 @@
+# 必不过哨兵 S2：F1 持续注入（不设 once），mock 每个请求都只发到【P12】（src/mock.ts:189-194），
+# 【P24】永远送不到——判分必须对它说不。破了说明判分放水，或 dsh 没打到 mock（E3 记 error，也算破）。
+# exit_code 为 dsh 0.1.7-rc.2 实测（2026-10-31 连跑 3 次一致：重试耗尽后 exit 1、turn_end error、
+# stderr "dsh: TRANSPORT: terminated"）：不声明则非零退出直接记 error，哨兵会因 error 被误判为破。
+name: sentinel-mock-impossible
+sentinel: must-fail
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+mock:
+  fault: F1
+assert:
+  exit_code: 1
+  turn_end: completed
+  output_contains: ["【P24】"]

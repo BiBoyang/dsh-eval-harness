@@ -16,7 +16,7 @@ export function apply(ctx: Context): void {
     defineTool({
       name: 'eval_run',
       description:
-        'Run DSH plugin regression eval cases: load yaml cases from cases_dir, drive real headless dsh agent sessions (isolated session_root/workspace), collect session traces (session.jsonl or default session.jsonl.zstd, read directly), run assertions, and write report.json + report.md to output_dir. Timed-out cases still get their partial trace collected when available. Output is a JSON text summary.',
+        'Run DSH plugin regression eval cases: load yaml cases from cases_dir, drive real headless dsh agent sessions (isolated session_root/workspace), collect session traces (session.jsonl or default session.jsonl.zstd, read directly), run assertions, and write report.json + report.md to output_dir. Timed-out cases still get their partial trace collected when available. Output is a JSON text summary. When the selected cases include mock cases, the built-in mock sentinels also run (not filtered by tags/only, not counted in summary) and the output carries a calibration block: calibration.healthy=false means the instruments are broken and this run cannot be trusted (eval_gate FAILs it).',
       parameters: {
         cases_dir: {
           type: 'string',
@@ -98,6 +98,8 @@ export function apply(ctx: Context): void {
         })
         return JSON.stringify({
           summary: report.summary,
+          // 仪表健康紧跟 summary：summary 全绿而 calibration 不健康时，结论同样不可信
+          ...(report.calibration === undefined ? {} : { calibration: report.calibration }),
           report_json: `${String(args.output_dir)}/report.json`,
           report_md: `${String(args.output_dir)}/report.md`,
           cases: report.cases.map((c) => ({ name: c.name, status: c.status, failures: c.failures, error: c.error })),

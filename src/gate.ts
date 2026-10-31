@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
 import { wilsonLowerBoundOneSided95 } from './reliability.js'
-import type { AttemptResult, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateUnreliableCase, GateVerdict, RunReport, TokenUsage } from './types.js'
+import { expectedStatus, sentinelReasons, sentinelsState } from './sentinel.js'
+import type { WeakReason } from './strength.js'
+import type { AttemptResult, Calibration, CaseReliability, CaseResult, CaseStatus, GateDiff, GateReport, GateTokenDiff, GateUnreliableCase, GateVerdict, RunReport, SentinelResult, TokenUsage, WeakCaseWarning } from './types.js'
 import { CURRENT_REPORT_SCHEMA_VERSION } from './types.js'
 
 /** gate 视角的归一化状态：error 按 fail 处理 */
@@ -43,6 +45,8 @@ export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
 /**
  * 门禁判定：对比 baseline（before）与本次（after）报告。
  * 规则（优先级从高到低）：
+ * - after 报告带 calibration 且不健康（哨兵破 / 被跳过）→ FAIL。哨兵每次独立判，不与 baseline
+ *   比，没有 baseline 也判 FAIL（P0 以 FAIL 落地，P1 改 INVALID）；没有 calibration 的报告不受影响
  * - 有用例 PASS → FAIL/error → FAIL
  * - 新增用例即 FAIL/error → FAIL
  * - baseline 有、本次缺席的用例 → FAIL（E7：缺席没有证据，不能当作通过；删用例须同 PR 刷新 baseline）
@@ -76,8 +80,14 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     toolErrorRecoveries: [],
     repeatedErrorSignatures: [],
     unreliableCases: [],
+    sentinels: sentinelsState(after.calibration),
   }
+  // 哨兵破是「仪表坏了」的直接证据，整份报告的结论都不可信——不走「较 baseline 增多」的增量口径
+  const sentinelFailures = sentinelReasons(after.calibration)
   if (!before) {
+    if (sentinelFailures.length > 0) {
+      return { ...base, verdict: 'FAIL', exitCode: gateExitCode('FAIL', strict), reasons: [...sentinelFailures, 'no baseline report; case comparison not applicable'] }
+    }
     return { ...base, verdict: 'N/A', exitCode: gateExitCode('N/A', strict), reasons: ['no baseline report; gate not applicable'] }
   }
 
@@ -159,8 +169,9 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   }
 
   let verdict: GateVerdict
-  if (base.regressions.length > 0 || base.newFailures.length > 0 || base.removed.length > 0) {
+  if (sentinelFailures.length > 0 || base.regressions.length > 0 || base.newFailures.length > 0 || base.removed.length > 0) {
     verdict = 'FAIL'
+    base.reasons.push(...sentinelFailures)
     for (const d of base.regressions) base.reasons.push(`regression: ${d.name} pass -> ${d.after}`)
     for (const d of base.newFailures) base.reasons.push(`new failing case: ${d.name}`)
     // E7：缺席不是通过——baseline 里的用例本次没有结果，就没有它仍然通过的证据
@@ -218,6 +229,7 @@ export function renderGateText(report: GateReport): string {
     `OVERALL=${report.verdict}`,
     `EXIT_CODE=${report.exitCode}`,
     `STRICT=${report.strict}`,
+    `SENTINELS=${report.sentinels}`,
     `REGRESSIONS=${report.regressions.length}`,
     `NEW_FAILURES=${report.newFailures.length}`,
     `IMPROVEMENTS=${report.improvements.length}`,
@@ -466,6 +478,65 @@ function normalizeCase(value: unknown, index: number, schemaVersion: 0 | 1, path
   }
 }
 
+/** WeakReason 全集：Record 让它与 strength.ts 的联合类型一一对应（增删原因时编译期报错） */
+const WEAK_REASONS: Record<WeakReason, true> = { 'host-without-exit-and-turn-end': true, 'answer-in-prompt': true, 'no-outcome-assertion': true }
+
+function normalizeSentinel(value: unknown, index: number, path: string): SentinelResult {
+  const field = `calibration.sentinels[${index}]`
+  if (!isRecord(value)) failReport(path, `${field} must be a mapping`)
+  const name = requiredString(value.name, `${field}.name`, path)
+  const kind = value.kind
+  if (kind !== 'must-pass' && kind !== 'must-fail') failReport(path, `${field}.kind must be one of must-pass, must-fail`)
+  const expected = expectedStatus(kind)
+  if (value.expected !== expected) failReport(path, `${field}.expected must be '${expected}' for kind ${kind}`)
+  const status = value.status
+  if (status !== 'pass' && status !== 'fail' && status !== 'error') failReport(path, `${field}.status must be one of pass, fail, error`)
+  if (value.error !== undefined && typeof value.error !== 'string') failReport(path, `${field}.error must be a string`)
+  const failures = value.failures === undefined ? undefined : stringArray(value.failures, `${field}.failures`, path)
+  const ok = value.ok
+  if (typeof ok !== 'boolean') failReport(path, `${field}.ok must be a boolean`)
+  if (ok !== (status === expected)) failReport(path, `${field}.ok does not match status '${status}' for kind ${kind}`)
+  return {
+    name,
+    kind,
+    expected,
+    status,
+    ...(value.error === undefined ? {} : { error: value.error as string }),
+    ...(failures === undefined ? {} : { failures }),
+    ok,
+  }
+}
+
+function normalizeWeakCase(value: unknown, index: number, path: string): WeakCaseWarning {
+  if (!isRecord(value)) failReport(path, `calibration.weakCases[${index}] must be a mapping`)
+  const name = requiredString(value.name, `calibration.weakCases[${index}].name`, path)
+  const reason = value.reason
+  if (typeof reason !== 'string' || !Object.hasOwn(WEAK_REASONS, reason)) {
+    failReport(path, `calibration.weakCases[${index}].reason must be one of ${Object.keys(WEAK_REASONS).join(', ')}`)
+  }
+  return { name, reason: reason as WeakReason }
+}
+
+/**
+ * calibration 段与普通用例同样严格：healthy 必须与哨兵明细一致（同 summary 对 cases 的校验）——
+ * 手改 healthy=true 盖住破掉的哨兵，loadReport 直接拒绝
+ */
+function normalizeCalibration(value: unknown, path: string): Calibration {
+  if (!isRecord(value)) failReport(path, 'calibration must be a mapping')
+  if (!Array.isArray(value.sentinels)) failReport(path, 'calibration.sentinels must be an array')
+  const sentinels = value.sentinels.map((item, index) => normalizeSentinel(item, index, path))
+  if (value.skipped !== undefined && typeof value.skipped !== 'boolean') failReport(path, 'calibration.skipped must be a boolean')
+  const skipped = value.skipped === true
+  if (skipped && sentinels.length > 0) failReport(path, 'calibration.sentinels must be empty when skipped')
+  if (!skipped && sentinels.length === 0) failReport(path, 'calibration.sentinels must not be empty unless skipped')
+  if (typeof value.healthy !== 'boolean') failReport(path, 'calibration.healthy must be a boolean')
+  const healthy = !skipped && sentinels.every((s) => s.ok)
+  if (value.healthy !== healthy) failReport(path, `calibration.healthy does not match sentinels (expected ${healthy}, got ${value.healthy})`)
+  if (!Array.isArray(value.weakCases)) failReport(path, 'calibration.weakCases must be an array')
+  const weakCases = value.weakCases.map((item, index) => normalizeWeakCase(item, index, path))
+  return { sentinels, healthy, ...(value.skipped === undefined ? {} : { skipped }), weakCases }
+}
+
 function normalizeReport(value: unknown, path: string): RunReport {
   if (!isRecord(value)) failReport(path, 'top level must be a mapping')
   const schemaVersion = value.schemaVersion === undefined ? 0 : value.schemaVersion
@@ -503,6 +574,7 @@ function normalizeReport(value: unknown, path: string): RunReport {
   if (JSON.stringify(summary) !== JSON.stringify(actual)) {
     failReport(path, `summary does not match cases (expected ${JSON.stringify(actual)}, got ${JSON.stringify(summary)})`)
   }
+  const calibration = value.calibration === undefined ? undefined : normalizeCalibration(value.calibration, path)
 
   return {
     schemaVersion,
@@ -515,6 +587,7 @@ function normalizeReport(value: unknown, path: string): RunReport {
     ...(value.dshVersion === undefined ? {} : { dshVersion: value.dshVersion as string }),
     cases,
     summary,
+    ...(calibration === undefined ? {} : { calibration }),
   }
 }
 

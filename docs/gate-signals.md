@@ -105,6 +105,32 @@ WARN 是一种会被烧掉的信号。如果门禁长期黄着，人看到 WARN 
 - 为什么是 FAIL 而不是 INVALID：P0 不升 report schema，「无效」先以 FAIL（exit 1）
   落地；INVALID 单列属于 P1 的三通道设计。
 
+## 7. 哨兵破：FAIL，不走增量
+
+- 规则：本次报告带 `calibration` 段（P0：用例集含 mock 用例的 run，见 README「mock 哨兵」）
+  且 `healthy === false` → FAIL（exit 1，strict 与否都是 1）。reason 为
+  `sentinel breach: <name> expected <kind> got <status>`（每个不符合预期的哨兵一条，排在
+  FAIL 理由最前），或 `sentinels skipped`（哨兵被 `RunOptions.sentinels: false` 关掉）。文本
+  输出 `SENTINELS=ok|breach|skipped|absent`；没有 `calibration` 段的报告（旧报告、`cases/real`）
+  记 `absent`，判定与以前完全一样。
+- 为什么不走「较 baseline 增多才告警」：那套口径是给反复出现的噪声防告警疲劳的。哨兵破不是
+  噪声，是「仪表坏了」的直接证据——S1 不过说明 harness → dsh → mock 这条管线断了，S2 过了
+  说明判分放水。无论哪种，这次 run 里所有用例的结论都不可信，包括「与 baseline 一致」。所以
+  哨兵每次独立判，不与 baseline 比，baseline 里的 `calibration` 也不参与；没有 baseline 时
+  同样判 FAIL，不退回 N/A。
+- 为什么 error 也算破：must-fail 的哨兵记了 error（典型是 `delivery-missing`：dsh 根本没打到
+  mock）证明不了判分会说不，而「dsh 没走 mock」正是 S2 要抓的。这与 mock 送达对账、缺席用例
+  FAIL 是同一条证据下限。
+- 为什么没有「跳过但放行」：`sentinels: false` 只开放给程序调用（不转发 mock 内容的 fake dsh
+  单测用），用例集含 mock 用例时一律记 `skipped` 并判 FAIL。能关掉还能放行的健康检查，迟早会
+  在最该响的那次被关掉。
+- 为什么 S2 必须声明实测退出码：dsh 0.1.7-rc.2 在持续 F1 下重试耗尽后 exit 1。不声明
+  `exit_code`，非零退出就直接记 error，S2 会因 error 被判破——那是哨兵自己的误报，不是判分
+  的问题。宿主升级后退出码若变，S2 会以 error 破掉，提醒人重新实测（与 chaos 包同一纪律）。
+- 已知盲区：0.1.7-rc.2 下 S2 有两条断言同时不过（turn_end 为 `error`、缺【P24】），只有
+  `output_contains` 一项判分退化时 S2 仍是 fail，察觉不到；判分整体放水才会让 S2 破。
+- 为什么是 FAIL 而不是 INVALID：与 §6 相同，P0 不升 report schema；P1 的三通道设计里改为 INVALID。
+
 ## 验证锚点
 
 历史报告可作为这四路信号的端到端回归夹具：

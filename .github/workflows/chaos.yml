@@ -1,0 +1,79 @@
+name: chaos
+
+# 离线 chaos 回归 + mock 哨兵：用 npm 版 dsh 0.1.7-rc.2（mock home 结构的锚定版本，见
+# src/runner.ts buildMockSettingsYaml / writeMockHome）跑 cases/chaos。全程打本地 mock，不需要真实
+# LLM 或任何 API key（本 workflow 不引用 secrets）。与 eval.yml 分开：eval.yml 的 dsh 升级属 P1。
+# 绿灯 = summary.failed + summary.errored === 0 且 calibration.healthy === true（哨兵 S1 过、S2 不过）。
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'cases/chaos/**'
+      - 'cases/_sentinels/**'
+      - '.github/workflows/chaos.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'cases/chaos/**'
+      - 'cases/_sentinels/**'
+      - '.github/workflows/chaos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # dsh 依赖树大，冷装耗时长；单独一步装好全局 dsh 二进制（版本钉死，升级是独立任务）
+      - name: Cache npm (dsh install)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-dsh-0.1.7-rc.2
+
+      - name: Install dsh
+        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+
+      # 哨兵随 mock 用例自动注入（不得关掉、不得筛掉）；calibration 缺席同样不算绿
+      - name: Run chaos pack (offline mock)
+        run: |
+          node --input-type=module -e "
+          import { runEval } from './lib/runner.js'
+          const report = await runEval({ casesDir: 'cases/chaos', outputDir: '.eval/chaos', dshBin: 'dsh' })
+          console.log(JSON.stringify(report.summary))
+          console.log(JSON.stringify(report.calibration))
+          const red = report.summary.failed + report.summary.errored > 0 || report.calibration?.healthy !== true
+          if (red) {
+            console.log('::error::chaos pack is red: failed+errored=' + (report.summary.failed + report.summary.errored) + ', calibration.healthy=' + report.calibration?.healthy)
+            process.exit(1)
+          }
+          "
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-report
+          path: |
+            .eval/chaos/report.json
+            .eval/chaos/report.md
+          retention-days: 14
