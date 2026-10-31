@@ -1,5 +1,5 @@
 import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
-import type { MockDeliverySummary, RunReport } from './types.js'
+import type { JudgeEvidence, MockDeliverySummary, RunReport } from './types.js'
 
 /** mock 送达证明摘要（多条以 ; 分隔）：fault 端点 事件数/字节数 + 关流方式 + 已送达的终止证人 */
 function formatMockDelivery(deliveries: MockDeliverySummary[]): string {
@@ -11,6 +11,11 @@ function formatMockDelivery(deliveries: MockDeliverySummary[]): string {
       return `${d.fault} ${d.endpoint}${d.stream ? '' : ' non-stream'} ${d.eventsCount}ev ${d.bytesSent}B ending=${d.ending} witnesses=${wits.length > 0 ? wits.join('+') : 'none'}`
     })
     .join('; ')
+}
+
+/** judge 证据摘要（E4）：判定 + judge 身份 + 理由（理由为空时省略） */
+function formatJudge(judge: JudgeEvidence): string {
+  return `${judge.pass ? 'PASS' : 'FAIL'} model=${judge.model} baseUrl=${judge.baseUrl}${judge.reason ? ` reason=${judge.reason}` : ''}`
 }
 
 /** JSON 报告（report.json） */
@@ -67,11 +72,13 @@ export function renderMarkdown(report: RunReport): string {
       if (c.stderrTail) lines.push(`- stderr: ${mdEscape(c.stderrTail)}`)
       for (const f of c.failures) lines.push(`- ${mdEscape(f)}`)
       for (const e of c.toolErrors) lines.push(`- tool error: ${mdEscape(e.name)}: ${mdEscape(e.error)}`)
-      // mock 送达证明（信息层）：单 attempt 用例也渲染——空数组同样是信号（dsh 没打 mock）
+      // mock 送达证明（E3 对账的证据）：单 attempt 用例也渲染——空数组同样是信号（dsh 没打 mock）；
+      // judge 证据（E4）：判 PASS 的 attempt 也渲染
       for (const attempt of c.attemptResults) {
         if (attempt.mockDelivery !== undefined) {
           lines.push(`- mock delivery (attempt ${attempt.index}): ${mdEscape(formatMockDelivery(attempt.mockDelivery))}`)
         }
+        if (attempt.judge !== undefined) lines.push(`- judge (attempt ${attempt.index}): ${mdEscape(formatJudge(attempt.judge))}`)
       }
       if (c.attemptResults.length > 1) {
         lines.push('', '#### Attempt 历史', '')

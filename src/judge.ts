@@ -9,16 +9,37 @@ import { readFile } from 'node:fs/promises'
  * Service 体系（Context + adapter 注册 + 流式 waterfall），judge 只是一次性
  * 短调用，为此拉起整套运行时不值得。
  *
- * 配置全走环境变量（工具层参数面无感）：
+ * 配置全走环境变量（工具层参数面无感），解析集中在 judgeConfig()——judgeOutput 发请求与
+ * runner 记 judge 证据（attempt.judge 的 model / baseUrl）共用这一份：
  * - EVAL_JUDGE_API_KEY：缺省回落 DEEPSEEK_API_KEY（评测环境通常已有）
  * - EVAL_JUDGE_BASE_URL：默认 https://api.deepseek.com
  * - EVAL_JUDGE_MODEL：默认 deepseek-chat
  */
 
-/** judge 判定结果：pass 二元 + 简短理由（FAIL 理由进 failures，PASS 理由丢弃） */
+/** judge 判定结果：pass 二元 + 简短理由（runner 连同 judge 身份记进 attempt.judge；FAIL 理由另进 failures） */
 export interface JudgeResult {
   pass: boolean
   reason: string
+}
+
+/** judge 配置（judgeConfig() 的解析结果） */
+export interface JudgeConfig {
+  /** EVAL_JUDGE_API_KEY，空串/未设时回落 DEEPSEEK_API_KEY；都没有为 undefined。只用于请求鉴权，不进报告 */
+  apiKey: string | undefined
+  /** EVAL_JUDGE_BASE_URL，默认 https://api.deepseek.com，去掉尾部斜杠 */
+  baseUrl: string
+  /** EVAL_JUDGE_MODEL，默认 deepseek-chat */
+  model: string
+}
+
+/** 解析 judge 配置：judgeOutput 与 judge 证据同源，证据里记的就是实际请求用的 model / baseUrl */
+export function judgeConfig(env: NodeJS.ProcessEnv = process.env): JudgeConfig {
+  return {
+    // 用 || 而非 ??：CI 里变量置空串视为未设置，继续回落到评测主 key
+    apiKey: env.EVAL_JUDGE_API_KEY || env.DEEPSEEK_API_KEY || undefined,
+    baseUrl: (env.EVAL_JUDGE_BASE_URL ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
+    model: env.EVAL_JUDGE_MODEL ?? 'deepseek-chat',
+  }
 }
 
 /** 单次 judge 调用超时：judge 只做一次短判定，卡死不该拖垮整个用例 */
@@ -46,13 +67,10 @@ export function parseJudgeReply(reply: string): JudgeResult {
  * throw，由调用方（runAttempt）按 infra error 处理——infra 抖动不应被记成断言失败。
  */
 export async function judgeOutput(input: { rubric: string; output: string }): Promise<JudgeResult> {
-  // 用 || 而非 ??：CI 里变量置空串视为未设置，继续回落到评测主 key
-  const apiKey = process.env.EVAL_JUDGE_API_KEY || process.env.DEEPSEEK_API_KEY
+  const { apiKey, baseUrl, model } = judgeConfig()
   if (!apiKey) {
     throw new Error('no judge API key: set EVAL_JUDGE_API_KEY or DEEPSEEK_API_KEY')
   }
-  const baseUrl = (process.env.EVAL_JUDGE_BASE_URL ?? 'https://api.deepseek.com').replace(/\/+$/, '')
-  const model = process.env.EVAL_JUDGE_MODEL ?? 'deepseek-chat'
 
   let res: Response
   try {

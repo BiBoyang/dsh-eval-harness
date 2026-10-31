@@ -106,10 +106,34 @@ describe('computeGate verdicts', () => {
     expect(g.added).toEqual(['b'])
   })
 
-  it('WARN on removed case', () => {
-    const g = computeGate(report([caseResult('a', 'pass'), caseResult('b', 'pass')]), report([caseResult('a', 'pass')]), false)
-    expect(g.verdict).toBe('WARN')
+  it('FAIL on a missing case (in baseline, absent from current report), exit 1 even when not strict (E7)', () => {
+    // 契约有意翻转（原为 WARN / exit 0）：缺席没有证据，不能当作通过
+    const before = report([caseResult('a', 'pass'), caseResult('b', 'pass')])
+    const after = report([caseResult('a', 'pass')])
+    const g = computeGate(before, after, false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.exitCode).toBe(1)
     expect(g.removed).toEqual(['b'])
+    expect(g.reasons).toEqual(['missing case: b (in baseline, absent from current report)'])
+    expect(computeGate(before, after, true).exitCode).toBe(1)
+    // 文本输出保留 REMOVED= 计数行
+    const text = renderGateText(g)
+    expect(text).toContain('OVERALL=FAIL')
+    expect(text).toContain('EXIT_CODE=1')
+    expect(text).toContain('REMOVED=1')
+    expect(text).toContain('REASON missing case: b (in baseline, absent from current report)')
+  })
+
+  it('lists every missing case after the regressions, whatever its baseline status (E7)', () => {
+    const before = report([caseResult('a', 'pass'), caseResult('b', 'fail'), caseResult('c', 'pass')])
+    const after = report([caseResult('a', 'fail')])
+    const g = computeGate(before, after, false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.reasons).toEqual([
+      'regression: a pass -> fail',
+      'missing case: b (in baseline, absent from current report)',
+      'missing case: c (in baseline, absent from current report)',
+    ])
   })
 
   it('FAIL dominates WARN signals', () => {
