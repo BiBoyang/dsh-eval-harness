@@ -81,11 +81,15 @@ assert:
 
 **LLM-as-judge（`output_judge`）**：表达「解释原因而非只给结论」这类写不出正则的语义
 期望。定位是**结构断言优先、judge 兜语义**——一个 attempt 只有结构性断言全过后才会调
-judge（结构已失败不白烧 judge token）；judge 判 FAIL 时理由进该用例 `failures`
-（形如 `output_judge: <理由>`），判 PASS 不留任何痕迹。judge 走 OpenAI 兼容 chat
+judge（结构已失败不白烧 judge token）。**判 PASS 与判 FAIL 都留痕**：该 attempt 记
+`judge: { pass, reason, model, baseUrl }`（report.json 的 `attemptResults[].judge`；report.md
+失败明细段——非 pass 或多 attempt 的用例——每个 attempt 一行 `- judge (attempt N): …`），
+PASS 判定事后可复核；判 FAIL 时理由另进该用例 `failures`（形如 `output_judge: <理由>`）。
+经 `RunOptions.judge` 注入的测试 judge，`model` / `baseUrl` 记 `injected`。judge 走 OpenAI 兼容 chat
 completions 接口（零依赖，Node 内置 fetch），配置全靠环境变量：`EVAL_JUDGE_API_KEY`
 （缺省回落 `DEEPSEEK_API_KEY`，两者都无时报错）、`EVAL_JUDGE_BASE_URL`（默认
-`https://api.deepseek.com`）、`EVAL_JUDGE_MODEL`（默认 `deepseek-chat`）。judge 调用
+`https://api.deepseek.com`）、`EVAL_JUDGE_MODEL`（默认 `deepseek-chat`）——证据里的 `model` /
+`baseUrl` 与实际请求同源（`judgeConfig()` 一处解析），API key 不进报告。judge 调用
 本身失败（HTTP 错误/超时/回复解析失败/无 key）按 `error` 处理而非 `fail`——infra 抖动
 不是断言失败，可被 `retries` 覆盖。
 
@@ -136,9 +140,14 @@ ephemeral mock provider（127.0.0.1 随机端口，用后即收），生成隔�
   手工解锁流程（"add the exact key pnpm printed, then re-run"）完全同构，不猜名、
   不全局放行。**风险语义：声明 `mock.plugins` 即授权这些插件的安装期构建脚本在
   本机执行（任意代码运行）——只声明信得过源码的插件，并钉死版本/commit。**
-- **送达证明**：报告 attempt 级附 `mockDelivery`（每 LLM 请求一条：端口、fault、
+- **送达证明与对账**：报告 attempt 级附 `mockDelivery`（每 LLM 请求一条：端口、fault、
   事件数、字节数、终止证人送达情况、关流方式）——"故障确实送达"可证，排除
-  "故障没送达导致的假绿/假红"。空数组同样是信号：dsh 根本没打到 mock。
+  "故障没送达导致的假绿/假红"。**缺送达即 error**：pass / fail 的 attempt 必须至少有一条
+  记录的 fault 等于声明值（缺省 F0）、端点等于 `mock.api` 对应端点（openai-completions→cc、
+  openai-responses→responses、anthropic-messages→anthropic），否则改记 `error`
+  （`delivery-missing:` 开头，附实收记录摘要）——空数组（dsh 根本没打到 mock）、fault 不符、
+  打错协议端点都算缺证据；已是 error 的 attempt（安装失败、超时等）保留原错误。`once`
+  下命中声明 fault 的是首个请求，此后回落 F0 的请求不影响对账。
 - **exit_code 断言**：声明后非零退出进入断言层比对（未声明的非零退出仍直接记
   error）。chaos 用例靠它钉住「截断必须显式失败」。
 - **dsh_bin 指向源码仓库跑法时的 tsx 解析坑**：子进程 cwd 是用例 workspace，
@@ -305,7 +314,8 @@ request_timeout_ms: 300000
 | 条件 | 判定 | 退出码 |
 | --- | --- | --- |
 | 有用例 PASS → FAIL/error，或新增用例即 FAIL/error | `FAIL` | 1 |
-| 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除） | `WARN` | 0（strict 为 2） |
+| baseline 有、本次缺席的用例（reason `missing case: …`；删/改名用例须同 PR 刷新 baseline，见 [docs/gate-signals.md](docs/gate-signals.md)） | `FAIL` | 1 |
+| 有用例 FAIL/error → PASS，或新增通过用例 | `WARN` | 0（strict 为 2） |
 | 状态不变但 token total 涨幅超阈值（默认 +50%，`max_token_increase_pct` 可调，0 关闭） | `WARN` | 0（strict 为 2） |
 | `skippedLines` 较 baseline 增长（trace 解析漏帧增多，断言可能基于残缺数据） | `WARN` | 0（strict 为 2） |
 | 新增 flaky 用例（重跑后才过）较 baseline 增多；baseline 已有 flaky 不重复告警 | `WARN` | 0（strict 为 2） |
@@ -350,7 +360,9 @@ LLM 或 API key。真实 agent 回归 workflow 见 [.github/workflows/eval.yml](
 按 `EXIT_CODE` 拦截；report 作为 artifact 留存。评测步开 `concurrency: 3` 与
 `retries: 1`（偶发网络/模型抖动重跑一次，flaky 标记留在报告里供排查）。
 用例或 harness 代码变更会触发重跑，
-另有每日定时跑（近 24h 无新 commit 则跳过）。
+另有每日定时跑（近 24h 无新 commit 则跳过）。**不跑不是绿**：主仓库（push / 定时 / 手动 /
+同仓 PR）缺 `DEEPSEEK_API_KEY` 时 `Require eval evidence` 步直接让 job 失败；fork PR 拿不到
+secrets（fork 仓库自己的运行也不受主仓库规则约束），跳过评测并在 step summary 写 `EVAL_SKIPPED=1`。
 
 baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/update-baseline.yml)：
 Actions 页手动触发 → 全量重跑 → 覆盖 `baseline/report.json` 并开 PR（附报告摘要），

@@ -1,12 +1,18 @@
 import { mkdtemp, mkdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, buildPluginInstallArgs, extractPluginPackageName, filterCases, findSessionFile, harvestAllowBuildKeys, parseCase, resolveDshCommand, runEval, splitDshBin, writeMockHome } from '../src/runner.ts'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it, vi } from 'vitest'
+import type { MockFault } from '../src/mock.ts'
+import { buildDshArgs, buildMockSettingsYaml, buildOverlayYaml, buildPluginInstallArgs, checkMockDelivery, extractPluginPackageName, filterCases, findSessionFile, harvestAllowBuildKeys, parseCase, resolveDshCommand, runEval, splitDshBin, writeMockHome } from '../src/runner.ts'
+import type { MockDeliverySummary } from '../src/types.ts'
 
 /** 最小 session 日志（纯 JSONL），header 可配 delegationDepth。 */
 const sessionJsonl = (depth: number, extra = ''): string =>
   `{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":${depth}}\n${extra}`
+
+/** 仓库内建 chaos 回归包（forge-f5 探针直接跑其中的真实用例，不复制、不修改） */
+const CHAOS_CASES_DIR = fileURLToPath(new URL('../cases/chaos', import.meta.url))
 
 describe('buildOverlayYaml', () => {
   it('overrides session-persistence-jsonl row with isolated root (leaving default zstd compression)', () => {
@@ -925,7 +931,7 @@ describe('runEval output_judge (LLM-as-judge)', () => {
     expect(c.attempts).toBe(1)
   }, 15_000)
 
-  it('judge PASS keeps the case pass and leaves no judge reason anywhere in the report', async () => {
+  it('judge PASS keeps the case pass and leaves the judge evidence on the attempt (E4)', async () => {
     const { fakeBin, casesDir, out } = await setupCase(judgedCase())
     const inputs: { rubric: string; output: string }[] = []
     const report = await runEval({
@@ -941,11 +947,57 @@ describe('runEval output_judge (LLM-as-judge)', () => {
 
     const c = firstCase(report)
     expect(c.status).toBe('pass')
+    expect(c.failures).toEqual([])
     expect(inputs).toHaveLength(1)
     // judge 收到 yaml 里的 rubric 与 trace 的最终文本
     expect(inputs[0]?.rubric).toBe('回答应解释原因')
-    // 判 PASS 的理由不写进最终 pass 用例的任何字段（report 全文也不含）
-    expect(JSON.stringify(report)).not.toContain('SECRET-JUDGE-REASON')
+    // 契约有意翻转（原期望报告全文不含 PASS 理由）：判 PASS 也留痕，注入的测试 judge 身份记 injected
+    const evidence = { pass: true, reason: 'SECRET-JUDGE-REASON', model: 'injected', baseUrl: 'injected' }
+    expect(report.cases[0]?.attemptResults[0]?.judge).toEqual(evidence)
+    const written = JSON.parse(await readFile(join(out, 'report.json'), 'utf8')) as typeof report
+    expect(written.cases[0]?.attemptResults[0]?.judge).toEqual(evidence)
+  }, 15_000)
+
+  it('judge FAIL also leaves the judge evidence on the attempt and one judge line in report.md (E4)', async () => {
+    const { fakeBin, casesDir, out } = await setupCase(judgedCase())
+    const report = await runEval({
+      casesDir,
+      outputDir: out,
+      dshBin: fakeBin,
+      timeoutMs: 10_000,
+      judge: async () => ({ pass: false, reason: '只给了结论，没解释原因' }),
+    })
+
+    expect(report.cases[0]?.status).toBe('fail')
+    expect(report.cases[0]?.attemptResults[0]?.judge).toEqual({ pass: false, reason: '只给了结论，没解释原因', model: 'injected', baseUrl: 'injected' })
+    const md = await readFile(join(out, 'report.md'), 'utf8')
+    expect(md).toContain('- judge (attempt 1): FAIL model=injected baseUrl=injected reason=只给了结论，没解释原因')
+  }, 15_000)
+
+  it('the real judge records model / baseUrl from judgeConfig, the same resolution its request uses (E4)', async () => {
+    vi.stubEnv('EVAL_JUDGE_API_KEY', 'judge-test-key')
+    vi.stubEnv('EVAL_JUDGE_BASE_URL', 'https://judge.example.test/v1/')
+    vi.stubEnv('EVAL_JUDGE_MODEL', 'judge-model-x')
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ choices: [{ message: { content: '解释了原因\nPASS' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const { fakeBin, casesDir, out } = await setupCase(judgedCase())
+      const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 10_000 })
+
+      expect(report.cases[0]?.status).toBe('pass')
+      expect(report.cases[0]?.attemptResults[0]?.judge).toEqual({ pass: true, reason: '解释了原因', model: 'judge-model-x', baseUrl: 'https://judge.example.test/v1' })
+      // 证据与实际请求同源：请求打的就是证据里的 baseUrl / model
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('https://judge.example.test/v1/chat/completions')
+      expect((JSON.parse(String(init.body)) as { model: string }).model).toBe('judge-model-x')
+      // key 只用于鉴权，不进报告
+      expect(JSON.stringify(report)).not.toContain('judge-test-key')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+    }
   }, 15_000)
 
   it('judge call failure counts as error and can be retried into a flaky pass', async () => {
@@ -1076,8 +1128,11 @@ describe('buildMockSettingsYaml', () => {
 })
 
 describe('runEval mock mode', () => {
-  /** mock 版 fake dsh：读取 DSH_HOME/settings.yaml 的 baseURL 打一次 mock，记录关键 env，落 session 日志 */
-  const writeMockFakeDsh = async (root: string, opts: { exit?: number; curl?: boolean } = {}): Promise<string> => {
+  /**
+   * mock 版 fake dsh：读取 DSH_HOME/settings.yaml 的 baseURL 打一次 mock，记录关键 env，落 session 日志。
+   * turnEnd 给定时追加一帧 turn/end（伪造终态：forge 类探针用）。
+   */
+  const writeMockFakeDsh = async (root: string, opts: { exit?: number; curl?: boolean; turnEnd?: string } = {}): Promise<string> => {
     const fakeBin = join(root, 'fake-dsh-mock')
     const lines = [
       '#!/bin/sh',
@@ -1095,6 +1150,9 @@ describe('runEval mock mode', () => {
       'dir="$root/case/session-fake"',
       'mkdir -p "$dir"',
       "printf '%s\\n' '{\"type\":\"session\",\"version\":0,\"id\":\"s\",\"createdAt\":1,\"cwd\":\"/x\",\"delegationDepth\":0}' '{\"type\":\"tool/call\",\"seq\":1,\"time\":1,\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}}' > \"$dir/session.jsonl\"",
+      ...(opts.turnEnd === undefined
+        ? []
+        : [`printf '%s\\n' '{"type":"turn/end","seq":2,"time":1,"data":{"turn":1,"reason":{"kind":"${opts.turnEnd}"}}}' >> "$dir/session.jsonl"`]),
       `exit ${opts.exit ?? 0}`,
       '',
     )
@@ -1144,7 +1202,7 @@ describe('runEval mock mode', () => {
     expect(await readFile(join(mockHome, 'profiles/headless/cordis.patch.yml'), 'utf8')).toContain('llm-pi-ai')
   }, 20_000)
 
-  it('mock case where dsh never calls the mock records an empty delivery array (signal, not absence)', async () => {
+  it('mock case where dsh never calls the mock is an error with delivery-missing; the empty delivery array stays as evidence (E3)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'eval-mockn-'))
     const fakeBin = await writeMockFakeDsh(root, { curl: false })
     const casesDir = join(root, 'cases')
@@ -1152,8 +1210,31 @@ describe('runEval mock mode', () => {
     await writeFile(join(casesDir, 'm.yml'), 'name: mock-untouched\nprompt: "p"\nmock:\n  fault: F2\nassert:\n  tools_called: [bash]\n')
 
     const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
-    expect(report.cases[0]?.status).toBe('pass')
-    expect(report.cases[0]?.attemptResults[0]?.mockDelivery).toEqual([])
+    // 契约有意翻转（原期望 pass）：结构断言全过也不作数——没有送达证据
+    const c = report.cases[0]
+    expect(c?.status).toBe('error')
+    expect(c?.error).toBe('delivery-missing: expected fault F2 on endpoint cc (mock.api openai-completions), received 0 LLM request(s)')
+    expect(c?.failures).toEqual([])
+    expect(c?.attemptResults[0]?.mockDelivery).toEqual([])
+  }, 20_000)
+
+  it('forge-f5 probe: a dsh that never calls the mock but forges the F5 terminal state is an error, not a pass (E3)', async () => {
+    // 探针 forge-f5（设计文档 §6.3）：不连 mock，直接伪造阳性对照 chaos-f5-think-only 的期望终态
+    // （turn_end=max-tokens、exit 1）。结构断言全部满足——改动前判 pass（K4），能拦下它的只有送达对账
+    const root = await mkdtemp(join(tmpdir(), 'eval-forge-f5-'))
+    const fakeBin = await writeMockFakeDsh(root, { curl: false, exit: 1, turnEnd: 'max-tokens' })
+
+    const report = await runEval({ casesDir: CHAOS_CASES_DIR, outputDir: join(root, 'out'), dshBin: fakeBin, only: ['chaos-f5-think-only'], timeoutMs: 20_000 })
+
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    expect(c.name).toBe('chaos-f5-think-only')
+    expect(c.turnEnd).toBe('max-tokens')
+    expect(c.exitCode).toBe(1)
+    expect(c.attemptResults[0]?.mockDelivery).toEqual([])
+    expect(c.status).toBe('error')
+    expect(c.error).toMatch(/^delivery-missing: /)
+    expect(c.failures).toEqual([])
   }, 20_000)
 
   it('mock.once arms a one-shot fault: first request faulted, retry hits healthy F0', async () => {
@@ -1285,6 +1366,124 @@ describe('runEval mock mode', () => {
   }, 20_000)
 })
 
+describe('runEval mock delivery reconciliation (E3)', () => {
+  const header = '{"type":"session","version":0,"id":"s","createdAt":1,"cwd":"/x","delegationDepth":0}'
+  const bashCall = '{"type":"tool/call","seq":1,"time":1,"data":{"turn":1,"step":1,"callId":"c1","name":"bash","arguments":"{}"}}'
+
+  /**
+   * 送达对账 fake dsh：按 requests 逐条打 mock（path 接在 settings.yaml 的 baseURL 之后；fault 给定时
+   * 带 x-mock-fault 头，mock 按头改写该请求的实收 fault——模拟「故障没按声明送达」），再落带 bash
+   * 调用的 trace（tools_called: [bash] 恒过），以 exit 码退出。
+   */
+  const writeDeliveryFakeDsh = async (root: string, requests: { path: string; fault?: string }[], exit: number): Promise<string> => {
+    const fakeBin = join(root, 'fake-dsh-delivery')
+    const lines = [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 0.0.0-fake; exit 0; fi',
+      'base=$(sed -n \'s/^ *baseURL: \\(.*\\)$/\\1/p\' "$DSH_HOME/settings.yaml")',
+      ...requests.map(
+        (r) =>
+          `curl -sS -N -X POST -H 'content-type: application/json'${r.fault === undefined ? '' : ` -H 'x-mock-fault: ${r.fault}'`} -d '{"model":"mock-model","stream":true}' "$base${r.path}" >/dev/null`,
+      ),
+      'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
+      'dir="$root/case/session-fake"',
+      'mkdir -p "$dir"',
+      `printf '%s\\n' '${header}' '${bashCall}' > "$dir/session.jsonl"`,
+      `exit ${exit}`,
+      '',
+    ]
+    await writeFile(fakeBin, lines.join('\n'), { mode: 0o755 })
+    return fakeBin
+  }
+
+  /** 跑单条 mock 用例（mockYaml 是 mock 段的缩进行），返回其 CaseResult */
+  const runMockCase = async (mockYaml: string, requests: { path: string; fault?: string }[], opts: { assert?: string; exit?: number } = {}) => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-e3-'))
+    const fakeBin = await writeDeliveryFakeDsh(root, requests, opts.exit ?? 0)
+    const casesDir = join(root, 'cases')
+    await mkdir(casesDir)
+    await writeFile(join(casesDir, 'm.yml'), `name: e3-case\nprompt: "p"\nmock:\n${mockYaml}assert:\n${opts.assert ?? '  tools_called: [bash]\n'}`)
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const c = report.cases[0]
+    if (!c) throw new Error('missing case result')
+    return c
+  }
+
+  it('F0 healthy: a delivery matching the declared fault on the declared endpoint keeps the pass', async () => {
+    const c = await runMockCase('  fault: F0\n', [{ path: '/chat/completions' }])
+    expect(c.status).toBe('pass')
+    expect(c.error).toBeUndefined()
+    expect(c.attemptResults[0]?.mockDelivery?.map((d) => `${d.fault}/${d.endpoint}`)).toEqual(['F0/cc'])
+  }, 20_000)
+
+  it('the expected endpoint follows mock.api (anthropic-messages -> /v1/messages)', async () => {
+    const c = await runMockCase('  fault: F0\n  api: anthropic-messages\n', [{ path: '/messages' }])
+    expect(c.status).toBe('pass')
+    expect(c.attemptResults[0]?.mockDelivery?.map((d) => `${d.fault}/${d.endpoint}`)).toEqual(['F0/anthropic'])
+  }, 20_000)
+
+  it('fault mismatch: the mock delivered another fault than declared -> error delivery-missing', async () => {
+    const c = await runMockCase('  fault: F0\n', [{ path: '/chat/completions', fault: 'F2' }])
+    expect(c.status).toBe('error')
+    expect(c.error).toBe('delivery-missing: expected fault F0 on endpoint cc (mock.api openai-completions), received 1 LLM request(s): F2 cc')
+    expect(c.failures).toEqual([])
+  }, 20_000)
+
+  it('endpoint mismatch: delivered on another protocol endpoint than mock.api -> error delivery-missing', async () => {
+    const c = await runMockCase('  fault: F0\n  api: openai-responses\n', [{ path: '/chat/completions' }])
+    expect(c.status).toBe('error')
+    expect(c.error).toBe('delivery-missing: expected fault F0 on endpoint responses (mock.api openai-responses), received 1 LLM request(s): F0 cc')
+  }, 20_000)
+
+  it('once: the first request carries the declared fault (the retry falls back to F0) and that is enough', async () => {
+    const c = await runMockCase('  fault: F1\n  once: true\n', [{ path: '/chat/completions' }, { path: '/chat/completions' }])
+    expect(c.status).toBe('pass')
+    expect(c.attemptResults[0]?.mockDelivery?.map((d) => `${d.fault}/${d.ending}`)).toEqual(['F1/fin', 'F0/clean'])
+  }, 20_000)
+
+  it('a fail without delivery evidence becomes error too (pass and fail both need evidence)', async () => {
+    const c = await runMockCase('  fault: F0\n', [], { assert: '  tools_called: [missing-tool]\n' })
+    expect(c.status).toBe('error')
+    expect(c.error).toMatch(/^delivery-missing: /)
+    expect(c.failures).toEqual([])
+  }, 20_000)
+
+  it('an attempt that is already error keeps its original error (no delivery-missing overwrite)', async () => {
+    const c = await runMockCase('  fault: F0\n', [], { exit: 3 })
+    expect(c.status).toBe('error')
+    expect(c.error).toContain('exited with code 3')
+    expect(c.error).not.toContain('delivery-missing')
+  }, 20_000)
+})
+
+describe('checkMockDelivery（E3 对账规则）', () => {
+  const delivery = (fault: MockFault, endpoint: MockDeliverySummary['endpoint'], stream = true): MockDeliverySummary => ({
+    port: 1,
+    endpoint,
+    fault,
+    stream,
+    bytesSent: 1,
+    eventsCount: 1,
+    witnesses: { ccDone: false, ccFinishChunk: false, responsesCompleted: false, responsesIncomplete: false, anthropicMessageStop: false },
+    ending: 'clean',
+  })
+
+  it('defaults to fault F0 on the openai-completions endpoint (cc)', () => {
+    expect(checkMockDelivery({}, [delivery('F0', 'cc')])).toBeUndefined()
+    expect(checkMockDelivery({}, [delivery('F0', 'responses')])).toMatch(/^delivery-missing: expected fault F0 on endpoint cc /)
+  })
+
+  it('accepts one matching record among auxiliary ones (at least one, not necessarily the first)', () => {
+    expect(checkMockDelivery({ fault: 'F4', api: 'anthropic-messages' }, [delivery('F0', 'cc'), delivery('F4', 'anthropic')])).toBeUndefined()
+  })
+
+  it('lists the received records (non-stream flagged) when none matches', () => {
+    expect(checkMockDelivery({ fault: 'F5', api: 'openai-responses' }, [delivery('F0', 'responses'), delivery('F5', 'cc', false)])).toBe(
+      'delivery-missing: expected fault F5 on endpoint responses (mock.api openai-responses), received 2 LLM request(s): F0 responses, F5 cc non-stream',
+    )
+  })
+})
+
 describe('extractPluginPackageName（allowBuilds 授权单元的 spec 解析）', () => {
   it('parses scoped npm specs (@scope/name[@version|@tag])', () => {
     expect(extractPluginPackageName('@liustack/modlens@3.26.5')).toBe('@liustack/modlens')
@@ -1383,6 +1582,7 @@ describe('runEval mock.plugins allowBuilds 解锁重试', () => {
    * 构建拦截 fake dsh：`plugin add` 首次以 pnpm 11 的 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED
    * 形态失败（stderr 打印 example key，keyUrl 参数控制 key 是否绑定声明 spec），
    * 第二次要求 key 已落进 profile 的 pnpm-workspace.yaml 才成功——证明重试与写文件。
+   * 评测调用打一次 mock 再落过测 trace（mock 用例须有送达证据，E3）。
    */
   const writeBlockingFakeDsh = async (root: string, keyUrl: string): Promise<string> => {
     const fakeBin = join(root, 'fake-dsh-blocking')
@@ -1407,6 +1607,8 @@ describe('runEval mock.plugins allowBuilds 解锁重试', () => {
         '  grep -q "fake-plugin@$spec" "$DSH_HOME/profiles/headless/pnpm-workspace.yaml" || exit 7',
         '  exit 0',
         'fi',
+        'base=$(sed -n \'s/^ *baseURL: \\(.*\\)$/\\1/p\' "$DSH_HOME/settings.yaml")',
+        'curl -sS -N -X POST -H \'content-type: application/json\' -d \'{"model":"mock-model","stream":true}\' "$base/chat/completions" >/dev/null',
         'root=$(sed -n \'s/^    root: "\\(.*\\)"$/\\1/p\' "$4")',
         'dir="$root/case/session-fake"',
         'mkdir -p "$dir"',

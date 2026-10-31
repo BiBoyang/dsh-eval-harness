@@ -83,8 +83,18 @@ jobs:
       - name: Install dsh
         run: npm install -g @deepseek-ai/dsh@0.1.1-rc.2
 
+      # 证据下限：主仓库缺 key 不允许以绿灯结束；fork PR 拿不到 secrets，允许跳过但显式标记
+      - name: Require eval evidence
+        if: env.DEEPSEEK_API_KEY == '' && github.repository == 'BiBoyang/dsh-eval-harness' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+        run: |
+          echo "::error::DEEPSEEK_API_KEY 未配置：评测没有运行，主仓库不允许以绿灯结束"
+          exit 1
+      - name: Mark skipped eval
+        if: env.DEEPSEEK_API_KEY == ''
+        run: echo "EVAL_SKIPPED=1" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Run eval cases (real LLM)
-        # fork / 未配置 DEEPSEEK_API_KEY 的环境跳过评测，不直接红（build+test 仍会跑）
+        # 无 key 时跳过（主仓库已被 Require eval evidence 拦红；fork 侧由 Mark skipped eval 显式标记），build+test 仍会跑
         if: env.DEEPSEEK_API_KEY != ''
         run: |
           node --input-type=module -e "

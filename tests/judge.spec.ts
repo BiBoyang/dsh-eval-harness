@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { judgeOutput, parseJudgeReply, validateJudge } from '../src/judge.ts'
+import { judgeConfig, judgeOutput, parseJudgeReply, validateJudge } from '../src/judge.ts'
 
 /** 构造 OpenAI 兼容 chat completions 的成功/失败 Response */
 const completionResponse = (content: string, status = 200): Response =>
@@ -25,6 +25,37 @@ describe('parseJudgeReply', () => {
   it('throws on replies without a parseable verdict line', () => {
     expect(() => parseJudgeReply('我觉得可以通过')).toThrow(/unparseable judge reply/)
     expect(() => parseJudgeReply('')).toThrow(/unparseable judge reply/)
+  })
+})
+
+describe('judgeConfig', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('defaults to https://api.deepseek.com + deepseek-chat, and no key', () => {
+    expect(judgeConfig({})).toEqual({ apiKey: undefined, baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' })
+  })
+
+  it('reads the EVAL_JUDGE_* overrides and strips trailing slashes from the base URL', () => {
+    expect(judgeConfig({ EVAL_JUDGE_API_KEY: 'k', EVAL_JUDGE_BASE_URL: 'https://judge.example.com/v1//', EVAL_JUDGE_MODEL: 'judge-model' })).toEqual({
+      apiKey: 'k',
+      baseUrl: 'https://judge.example.com/v1',
+      model: 'judge-model',
+    })
+  })
+
+  it('falls back to DEEPSEEK_API_KEY when EVAL_JUDGE_API_KEY is empty or unset; empty everywhere is undefined', () => {
+    expect(judgeConfig({ EVAL_JUDGE_API_KEY: 'judge', DEEPSEEK_API_KEY: 'ds' }).apiKey).toBe('judge')
+    expect(judgeConfig({ EVAL_JUDGE_API_KEY: '', DEEPSEEK_API_KEY: 'ds' }).apiKey).toBe('ds')
+    expect(judgeConfig({ DEEPSEEK_API_KEY: 'ds' }).apiKey).toBe('ds')
+    expect(judgeConfig({ EVAL_JUDGE_API_KEY: '', DEEPSEEK_API_KEY: '' }).apiKey).toBeUndefined()
+  })
+
+  it('reads process.env by default (the resolution judgeOutput uses)', () => {
+    vi.stubEnv('EVAL_JUDGE_BASE_URL', 'https://env.example.com/')
+    vi.stubEnv('EVAL_JUDGE_MODEL', 'env-model')
+    expect(judgeConfig()).toMatchObject({ baseUrl: 'https://env.example.com', model: 'env-model' })
   })
 })
 

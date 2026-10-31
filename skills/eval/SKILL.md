@@ -82,7 +82,9 @@ assert:
   （门禁不被偶发抖动打红）；`trials: n` 跑满 n 次独立尝试（每次清空 workspace、不
   重试），报告给出单次成功率与 pass@k/pass^k。两者语义互斥：trials > 1 时 retries
   被忽略。
-- **用例名稳定**：gate 按 `name` 对比 baseline，改名 = 删除 + 新增（WARN）。
+- **用例名稳定**：gate 按 `name` 对比 baseline，改名 = 旧名缺席 + 新增；baseline
+  里的用例本次缺席直接判 FAIL（exit 1）。删用例 / 改名须同 PR 刷新 baseline
+  （触发 update-baseline），理由见 `docs/gate-signals.md` §6。
 
 ## 跑评测与门禁
 

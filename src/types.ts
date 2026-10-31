@@ -29,7 +29,7 @@ export interface EvalAssert {
   max_tokens?: number
   /** true 时任何工具硬错误（tool/result 带 error 或 isError）即 fail */
   no_tool_errors?: boolean
-  /** LLM-as-judge 语义断言（结构断言全过后才调；判 FAIL 的理由只进 failures 消息） */
+  /** LLM-as-judge 语义断言（结构断言全过后才调；判 PASS / FAIL 都在 attempt.judge 留痕，FAIL 理由另进 failures） */
   output_judge?: OutputJudgeAssert
 }
 
@@ -191,8 +191,24 @@ export interface AttemptResult {
   timedOut?: boolean
   stderrTail?: string
   durationMs: number
-  /** mock 用例的送达证明摘要（每 LLM 请求一条）；信息层，v1 无对应断言 */
+  /**
+   * mock 用例的送达证明摘要（每 LLM 请求一条）。E3 送达对账的证据：pass / fail 的 attempt
+   * 须至少一条与声明的 fault / api 一致，否则改记 error（`delivery-missing:`）
+   */
   mockDelivery?: MockDeliverySummary[]
+  /** output_judge 判定证据（E4）：调了 judge 且拿到判定的 attempt 才有；judge 调用失败记 error，无此字段 */
+  judge?: JudgeEvidence
+}
+
+/** output_judge 的判定证据（E4：判 PASS 与判 FAIL 都记，PASS 判定事后可复核） */
+export interface JudgeEvidence {
+  pass: boolean
+  /** judge 回复里 PASS/FAIL 行之前的分析（parseJudgeReply 的 reason） */
+  reason: string
+  /** judge 模型：src/judge.ts judgeConfig() 的解析值；经 RunOptions.judge 注入的测试 judge 记 'injected' */
+  model: string
+  /** judge 接口 base URL（judgeConfig() 解析，已去尾斜杠）；注入的测试 judge 记 'injected' */
+  baseUrl: string
 }
 
 /** 每条用例的可靠性测量（trials > 1 时写入；trials = 1 时省略） */
@@ -296,7 +312,7 @@ export interface GateReport {
   improvements: GateDiff[]
   /** 本次新增的通过用例名 */
   added: string[]
-  /** baseline 有而本次没有的用例名 */
+  /** baseline 有而本次没有的用例名（E7：非空即 FAIL，reason 为 `missing case: …`） */
   removed: string[]
   /** 状态不变但 token total 涨幅超阈值的用例（before/after 为 total 值） */
   tokenRegressions: GateTokenDiff[]

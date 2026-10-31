@@ -6,12 +6,12 @@ import { join, resolve } from 'node:path'
 import { checkAssertions } from './assert.js'
 import { collectFromFile, readSessionHeader } from './collector.js'
 import { summarize } from './gate.js'
-import { judgeOutput } from './judge.js'
+import { judgeConfig, judgeOutput } from './judge.js'
 import { startMockServer } from './mock.js'
-import type { MockFault, MockServer } from './mock.js'
+import type { MockEndpoint, MockFault, MockServer } from './mock.js'
 import { renderJson, renderMarkdown } from './report.js'
 import { CURRENT_REPORT_SCHEMA_VERSION, emptyTokenUsage } from './types.js'
-import type { AttemptResult, CaseResult, CollectedTrace, EvalAssert, EvalCase, MockApi, MockCaseConfig, MockDeliverySummary, RunReport } from './types.js'
+import type { AttemptResult, CaseResult, CollectedTrace, EvalAssert, EvalCase, JudgeEvidence, MockApi, MockCaseConfig, MockDeliverySummary, RunReport } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
 import { buildReliability } from './reliability.js'
 
@@ -421,6 +421,29 @@ function buildMockEnv(mockHome: string): NodeJS.ProcessEnv {
   return env
 }
 
+/** mock.api → 送达记录的端点标识（与 src/mock.ts ENDPOINTS 的路由一致：/v1/chat/completions、/v1/responses、/v1/messages） */
+const MOCK_API_ENDPOINTS: Record<MockApi, MockEndpoint> = {
+  'openai-completions': 'cc',
+  'openai-responses': 'responses',
+  'anthropic-messages': 'anthropic',
+}
+
+/**
+ * E3 送达对账：mock 用例的 attempt 须至少有一条送达记录与声明一致——fault 等于声明值
+ * （缺省 F0）且端点等于声明 api 对应的端点。取「至少一条」而非「首条」：对 dsh 可能发出的
+ * 辅助请求保持宽容；once 语义下命中声明 fault 的是首个 LLM 请求（即主请求，chaos 包实测），
+ * 此后回落 F0 的请求不影响对账。一致返回 undefined；不一致返回 `delivery-missing:` 开头的
+ * 错误，列出实收记录摘要（空数组 = dsh 根本没打到 mock）。
+ */
+export function checkMockDelivery(mock: MockCaseConfig, deliveries: readonly MockDeliverySummary[]): string | undefined {
+  const fault = mock.fault ?? 'F0'
+  const api = mock.api ?? 'openai-completions'
+  const endpoint = MOCK_API_ENDPOINTS[api]
+  if (deliveries.some((d) => d.fault === fault && d.endpoint === endpoint)) return undefined
+  const received = deliveries.map((d) => `${d.fault} ${d.endpoint}${d.stream ? '' : ' non-stream'}`).join(', ')
+  return `delivery-missing: expected fault ${fault} on endpoint ${endpoint} (mock.api ${api}), received ${deliveries.length} LLM request(s)${received ? `: ${received}` : ''}`
+}
+
 /** dsh 安装器子进程参数：`plugin --profile <profile> add <spec>`（转发给 profile 目录内的 pnpm） */
 export function buildPluginInstallArgs(profile: string, spec: string): string[] {
   return ['plugin', '--profile', profile, 'add', spec]
@@ -803,6 +826,12 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
   const passK = Math.max(1, Math.floor(options.passK ?? 2))
   // judge 缺省用真实实现（env 配置）；测试经 RunOptions.judge 注入假实现
   const judgeFn = options.judge ?? judgeOutput
+  /** judge 证据的身份字段（E4）：真实 judge 取 judgeConfig()（与 judgeOutput 同一套 env 与缺省值）；注入的记 injected */
+  const judgeIdentity = (): Pick<JudgeEvidence, 'model' | 'baseUrl'> => {
+    if (options.judge !== undefined) return { model: 'injected', baseUrl: 'injected' }
+    const { model, baseUrl } = judgeConfig()
+    return { model, baseUrl }
+  }
   const casesDir = resolve(options.casesDir)
   const outputDir = resolve(options.outputDir)
   const sessionBase = resolve(options.sessionRoot ?? join(outputDir, '.sessions'))
@@ -921,13 +950,17 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
         const failures = checkAssertions(evalCase.assert, trace, { exitCode: proc.code })
         // judge 兜语义：仅当结构性断言全过且用例带 output_judge 才调——
         // 结构已失败的 attempt 重跑也过不了，不白烧 judge token
+        let judge: JudgeEvidence | undefined
         if (failures.length === 0 && evalCase.assert.output_judge !== undefined) {
           try {
+            // 身份在调用前取：judgeOutput 开头同步解析同一份 env，两者看到的是同一快照
+            const identity = judgeIdentity()
             const verdict = await judgeFn({ rubric: evalCase.assert.output_judge.rubric, output: trace.finalText })
+            // E4：判 PASS 与判 FAIL 都在 attempt 上留痕（判定 + 理由 + judge 身份），PASS 判定事后可复核
+            judge = { pass: verdict.pass, reason: verdict.reason, ...identity }
             if (!verdict.pass) {
               failures.push(`output_judge: ${verdict.reason}`)
             }
-            // 判 PASS 时理由丢弃：report 不新增字段，pass 用例不留 judge 痕迹
           } catch (err) {
             // infra 抖动（HTTP 错误/超时/解析失败/无 key）记 error 而非 fail，
             // 可被 retries 覆盖——不应被记成断言失败
@@ -948,6 +981,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
           ...procFields,
           status: failures.length === 0 ? 'pass' : 'fail',
           failures,
+          ...(judge === undefined ? {} : { judge }),
           durationMs: Date.now() - startedAt,
         }
       } catch (err) {
@@ -958,7 +992,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     /**
      * 单次 attempt 入口：mock 用例在此起 per-attempt ephemeral mock server（port 0），
      * try/finally 保证异常路径也回收端口；送达证明摘要（每 LLM 请求一条）附进
-     * attempt 结果——空数组本身是信号：dsh 根本没打到 mock。
+     * attempt 结果，并在关 server 前做送达对账（E3，见 checkMockDelivery）。
      */
     const runAttempt = async (attemptIndex: number): Promise<Omit<AttemptResult, 'index'>> => {
       const mockConf = evalCase.mock
@@ -987,6 +1021,11 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
           witnesses: r.witnesses,
           ending: r.ending,
         }))
+        // E3：pass / fail 都要有与声明一致的送达证据，否则改记 error——没打到 mock 的判分
+        // （含直接伪造终态的假 pass）不作数，断言结论随之作废（failures 清空，与其他 error 出口
+        // 一致）。已是 error 的 attempt（安装失败、超时等）保留原错误，不覆盖
+        const deliveryError = result.status === 'error' ? undefined : checkMockDelivery(mockConf, mockDelivery)
+        if (deliveryError !== undefined) return { ...result, status: 'error', error: deliveryError, failures: [], mockDelivery }
         return { ...result, mockDelivery }
       } finally {
         await server.close()

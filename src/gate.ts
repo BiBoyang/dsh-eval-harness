@@ -45,7 +45,8 @@ export const DEFAULT_MAX_TOKEN_INCREASE_PCT = 50
  * 规则（优先级从高到低）：
  * - 有用例 PASS → FAIL/error → FAIL
  * - 新增用例即 FAIL/error → FAIL
- * - 有用例 FAIL/error → PASS，或用例数量变化（新增通过/移除）→ WARN
+ * - baseline 有、本次缺席的用例 → FAIL（E7：缺席没有证据，不能当作通过；删用例须同 PR 刷新 baseline）
+ * - 有用例 FAIL/error → PASS，或新增通过用例 → WARN
  * - 状态不变但 token total 涨幅超阈值（默认 +50%）→ WARN
  * - skippedLines 较 baseline 增长（trace 解析漏帧增多）→ WARN
  * - 新增 flaky 用例（较 baseline 增多；baseline 已有的不重复告警）→ WARN
@@ -158,14 +159,15 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
   }
 
   let verdict: GateVerdict
-  if (base.regressions.length > 0 || base.newFailures.length > 0) {
+  if (base.regressions.length > 0 || base.newFailures.length > 0 || base.removed.length > 0) {
     verdict = 'FAIL'
     for (const d of base.regressions) base.reasons.push(`regression: ${d.name} pass -> ${d.after}`)
     for (const d of base.newFailures) base.reasons.push(`new failing case: ${d.name}`)
+    // E7：缺席不是通过——baseline 里的用例本次没有结果，就没有它仍然通过的证据
+    for (const n of base.removed) base.reasons.push(`missing case: ${n} (in baseline, absent from current report)`)
   } else if (
     base.improvements.length > 0 ||
     base.added.length > 0 ||
-    base.removed.length > 0 ||
     base.tokenRegressions.length > 0 ||
     base.skippedLineIncreases.length > 0 ||
     base.flakyCases.length > 0 ||
@@ -176,7 +178,6 @@ export function computeGate(before: RunReport | null, after: RunReport, strict: 
     verdict = 'WARN'
     for (const d of base.improvements) base.reasons.push(`improvement: ${d.name} fail -> pass`)
     for (const n of base.added) base.reasons.push(`added passing case: ${n}`)
-    for (const n of base.removed) base.reasons.push(`removed case: ${n}`)
   } else {
     verdict = 'PASS'
     base.reasons.push('all case results identical to baseline')

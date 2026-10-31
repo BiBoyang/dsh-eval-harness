@@ -86,6 +86,25 @@ WARN 是一种会被烧掉的信号。如果门禁长期黄着，人看到 WARN 
 - 口径注意：pass^k 自 0.3.x 起改用无偏组合估计 C(c,k)/C(n,k)（旧版为 plug-in
   (c/n)^k，向上偏），新旧报告的 passPowK 数值不可直接比。
 
+## 6. 缺席用例：FAIL（证据下限，不是软信号）
+
+- 规则：baseline 里有、本次报告里没有的用例 → FAIL（exit 1，strict 与否都是 1），
+  reason 为 `missing case: <name> (in baseline, absent from current report)`；文本输出
+  的 `REMOVED=` 计数行保留。
+- 取舍：**缺证据不放行**。缺席的用例本次没有任何结果，也就没有「它仍然通过」的
+  证据。旧规则只给 WARN，而 eval.yml 以非 strict 调用 gate（WARN 退出码为 0）——用例
+  被误删、改名、被筛选掉或半途丢失时门禁照样是绿的，而消失的那条恰恰可能是最该报警
+  的。这与 mock 送达对账（缺送达即 error）、judge 判 PASS 也留痕是同一条证据下限。
+- 为什么不套前几节「较 baseline 增多才告警」的口径：那是给会反复出现的噪声信号防
+  告警疲劳的；缺席不是噪声，刷新 baseline 一次就消失，不会长期黄着把信号磨平。
+- 代价（有意接受的纪律成本）：**删用例须同 PR 刷新 baseline**，否则该 PR 的评测一直
+  FAIL。操作路径：删用例 → 触发 update-baseline（Actions 页手动运行，可选删用例所在的
+  分支；全量重跑后开 baseline PR）→ 复核合入 baseline PR。改名 = 缺席（FAIL）+ 新增，
+  同样要刷新。用 `only` / `tags` 筛选跑出的局部报告也不能拿去比全量 baseline——会判
+  FAIL，这正是规则要拦的「局部证据冒充全量」。
+- 为什么是 FAIL 而不是 INVALID：P0 不升 report schema，「无效」先以 FAIL（exit 1）
+  落地；INVALID 单列属于 P1 的三通道设计。
+
 ## 验证锚点
 
 历史报告可作为这四路信号的端到端回归夹具：
