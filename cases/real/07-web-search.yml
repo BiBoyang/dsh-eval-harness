@@ -9,5 +9,10 @@ assert:
   # 品牌名大小写不确定（DeepSeek/deepseek），output_contains 区分大小写，
   # 改用 output_matches 正则落实 prompt 里「不区分大小写」的意图。
   output_matches: ["[Dd]eep[Ss]eek"]
+  # 结果型断言：web_search 真实返回的结果里须有 DeepSeek（baseline："Sources:\n- [DeepSeek发布…"）。
+  # 查的是实时网页，不含该词的概率很低但不为零；真实复核出现抖动用 trials 量成功率，不放宽断言
+  tool_result_contains:
+    - name: web_search
+      contains: DeepSeek
   max_steps: 8
   max_tokens: 40000

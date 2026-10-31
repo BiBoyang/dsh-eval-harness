@@ -102,6 +102,14 @@ completions 接口（零依赖，Node 内置 fetch），配置全靠环境变量
 [`cases/real/`](cases/real/) 收录了 12 条针对真实插件（bash/fs/search/todo/web_search/subagent/workflow 等）的实测用例，全部在真实 agent 回合中验证过；
 其中 `08-read-image.yml` 演示 `no_tool_errors` 如何拦下「工具报错但 agent 兜底答对」的假通过（在无视觉能力的模型上该用例预期 fail，属正常）。
 
+**结果型断言（`cases/real` 的通过口径）**：每条用例都至少有一条 `tool_result_contains`，期望串取自被测工具在
+baseline 里的真实返回——只有工具真实执行、并返回了期望内容，用例才能通过。期望串写在 prompt 里的
+`output_contains` / `output_matches` / `tool_args_contains`，不调工具、只复述 prompt 也能命中，单独不算数。
+两道离线测试守住这条口径：`tests/probes.spec.ts` 做断言强度静态检查，并用 parrot 探针（复述 prompt、工具结果一律报错）
+跑 `cases/real`，一条都不能通过；`tests/baseline-replay.spec.ts` 用 `baseline/report.json` 的真实轨迹回放当前断言，
+已知正确解必须被接受（期望串抄错、断言收得过紧会直接变红）。期望串绑的是工具文案：dsh 升级改了文案时，真实评测与
+回放会一起变红，口径变化须人工确认。各类 verifier 的已知放水方式、弱用例白名单与维护规则见 [docs/abc-checklist.md](docs/abc-checklist.md)。
+
 **解析约束**：harness 内置零依赖 YAML 子集解析器（块级 map、`- ` 标量/map 序列、
 flow 序列、引号、数字/布尔/null、`|`/`>` 块标量、注释）。不支持锚点、多文档；
 解析失败报带行号的 `eval_run:` 前缀错误。

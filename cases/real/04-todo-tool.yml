@@ -7,5 +7,10 @@ assert:
   turn_end: completed
   tools_called: ["todo_write"]
   output_contains: ["TODODONE"]
+  # 结果型断言：todo_write 真实建好两项才会返回 "2 pending"（baseline："Updated todo list:
+  # 2 pending, 0 in progress, 0 completed."）。文案随 dsh 版本变化，升级时须人工确认口径
+  tool_result_contains:
+    - name: todo_write
+      contains: "2 pending"
   max_steps: 8
   max_tokens: 30000
