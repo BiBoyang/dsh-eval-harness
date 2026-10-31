@@ -557,7 +557,7 @@ describe('runEval timeout kills the whole process tree (POSIX)', () => {
 
     process.env.ORPHAN_GC_PIDFILE = pidFile
     const started = Date.now()
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 800 }).finally(() => {
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, sentinels: false, timeoutMs: 800 }).finally(() => {
       delete process.env.ORPHAN_GC_PIDFILE
     })
     expect(Date.now() - started).toBeLessThan(10_000)
@@ -1168,7 +1168,7 @@ describe('runEval mock mode', () => {
     await writeFile(join(casesDir, 'm.yml'), 'name: mock-f0\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
 
     const out = join(root, 'out')
-    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
 
     const c = report.cases[0]
     expect(c.status).toBe('pass')
@@ -1209,7 +1209,7 @@ describe('runEval mock mode', () => {
     await mkdir(casesDir)
     await writeFile(join(casesDir, 'm.yml'), 'name: mock-untouched\nprompt: "p"\nmock:\n  fault: F2\nassert:\n  tools_called: [bash]\n')
 
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
     // 契约有意翻转（原期望 pass）：结构断言全过也不作数——没有送达证据
     const c = report.cases[0]
     expect(c?.status).toBe('error')
@@ -1224,7 +1224,7 @@ describe('runEval mock mode', () => {
     const root = await mkdtemp(join(tmpdir(), 'eval-forge-f5-'))
     const fakeBin = await writeMockFakeDsh(root, { curl: false, exit: 1, turnEnd: 'max-tokens' })
 
-    const report = await runEval({ casesDir: CHAOS_CASES_DIR, outputDir: join(root, 'out'), dshBin: fakeBin, only: ['chaos-f5-think-only'], timeoutMs: 20_000 })
+    const report = await runEval({ casesDir: CHAOS_CASES_DIR, outputDir: join(root, 'out'), dshBin: fakeBin, only: ['chaos-f5-think-only'], sentinels: false, timeoutMs: 20_000 })
 
     const c = report.cases[0]
     if (!c) throw new Error('missing case result')
@@ -1261,7 +1261,7 @@ describe('runEval mock mode', () => {
     await mkdir(casesDir)
     await writeFile(join(casesDir, 'm.yml'), 'name: mock-once-f1\nprompt: "p"\nmock:\n  fault: F1\n  once: true\nassert:\n  max_steps: 3\n')
 
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
     expect(report.cases[0]?.status).toBe('pass')
     const delivery = report.cases[0]?.attemptResults[0]?.mockDelivery
     // 一次性语义：首个请求 F1（fin 截断），此后控制面回 F0（健康流）
@@ -1276,7 +1276,7 @@ describe('runEval mock mode', () => {
     await writeFile(join(casesDir, 'a.yml'), 'name: mock-a\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
     await writeFile(join(casesDir, 'b.yml'), 'name: mock-b\nprompt: "p"\nmock:\n  fault: F4\nassert:\n  tools_called: [bash]\n')
 
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, concurrency: 2, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, concurrency: 2, sentinels: false, timeoutMs: 20_000 })
     expect(report.cases.map((c) => c.status)).toEqual(['pass', 'pass'])
 
     const a = report.cases[0]?.attemptResults[0]?.mockDelivery
@@ -1403,7 +1403,7 @@ describe('runEval mock delivery reconciliation (E3)', () => {
     const casesDir = join(root, 'cases')
     await mkdir(casesDir)
     await writeFile(join(casesDir, 'm.yml'), `name: e3-case\nprompt: "p"\nmock:\n${mockYaml}assert:\n${opts.assert ?? '  tools_called: [bash]\n'}`)
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
     const c = report.cases[0]
     if (!c) throw new Error('missing case result')
     return c
@@ -1633,7 +1633,7 @@ describe('runEval mock.plugins allowBuilds 解锁重试', () => {
     )
 
     const out = join(root, 'out')
-    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
 
     const c = report.cases[0]
     if (!c) throw new Error('missing case result')
@@ -1659,7 +1659,7 @@ describe('runEval mock.plugins allowBuilds 解锁重试', () => {
     )
 
     const out = join(root, 'out')
-    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
 
     const c = report.cases[0]
     if (!c) throw new Error('missing case result')
@@ -1724,7 +1724,7 @@ describe('runEval mock.plugins (挂载被测插件)', () => {
     )
 
     const out = join(root, 'out')
-    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: out, dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
 
     // 用例本身照常过（插件挂载不改变 mock 流），送达证明照常记录
     const c = report.cases[0]
@@ -1756,7 +1756,7 @@ describe('runEval mock.plugins (挂载被测插件)', () => {
     )
     await writeFile(join(casesDir, 'b.yml'), 'name: healthy-peer\nprompt: "p"\nmock:\n  fault: F0\nassert:\n  tools_called: [bash]\n')
 
-    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, timeoutMs: 20_000 })
+    const report = await runEval({ casesDir, outputDir: join(root, 'out'), dshBin: fakeBin, sentinels: false, timeoutMs: 20_000 })
 
     // 安装失败是数据不是崩溃：该用例 error（消息含 spec、命令形态与输出尾部），
     // 同 run 的其他用例照常执行

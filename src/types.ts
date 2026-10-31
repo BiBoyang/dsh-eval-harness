@@ -1,4 +1,5 @@
 import type { MockDeliveryWitnesses, MockEndpoint, MockEnding, MockFault } from './mock.js'
+import type { WeakReason } from './strength.js'
 
 /** 评测用例断言（cases/*.yml 的 assert 段） */
 export interface EvalAssert {
@@ -95,8 +96,16 @@ export interface EvalCase {
   trials?: number
   /** mock 模式：per-case 起 ephemeral mock provider + 隔离 DSH_HOME 指向它 */
   mock?: MockCaseConfig
+  /**
+   * 哨兵种类：只在内置哨兵集（cases/_sentinels/，见 src/sentinel.ts）里生效。写在普通用例里
+   * 不改变它的语义——照常进 cases / summary
+   */
+  sentinel?: SentinelKind
   assert: EvalAssert
 }
+
+/** 哨兵种类：must-pass 要求 status=pass；must-fail 要求 status=fail（error 两种都不符合） */
+export type SentinelKind = 'must-pass' | 'must-fail'
 
 /**
  * 聚合 token 用量（分字段；与 DSH TokenUsage 对齐，计数互斥：
@@ -286,6 +295,44 @@ export interface RunReport {
     failed: number
     errored: number
   }
+  /**
+   * run 级仪表健康位（可选，schema 仍为 1）。P0：本次（筛选后）用例集含 mock 用例时写入，
+   * 不含则省略。哨兵结果只在这里，不进 cases / summary
+   */
+  calibration?: Calibration
+}
+
+/** run 级仪表健康：内置哨兵的结论 + 本次 subject 用例的弱断言告警 */
+export interface Calibration {
+  sentinels: SentinelResult[]
+  /** 至少一个哨兵、全部 ok 且未跳过；false → eval_gate 判 FAIL */
+  healthy: boolean
+  /** RunOptions.sentinels === false 且用例集含 mock 用例：哨兵没跑（sentinels 为空，healthy 为 false） */
+  skipped?: boolean
+  /** assessAssertionStrength 判弱的本次 subject 用例：只告警，不影响判定 */
+  weakCases: WeakCaseWarning[]
+}
+
+/** 单个哨兵的结论（单次 attempt，不重试） */
+export interface SentinelResult {
+  name: string
+  kind: SentinelKind
+  /** must-pass → pass，must-fail → fail */
+  expected: 'pass' | 'fail'
+  /** 实际状态，与普通用例同口径（含 E3 送达对账） */
+  status: CaseStatus
+  /** status=error 时的错误信息 */
+  error?: string
+  /** 断言失败消息（非空才写）：哨兵的 trace 不进 cases，诊断靠这里 */
+  failures?: string[]
+  /** status === expected */
+  ok: boolean
+}
+
+/** 弱用例告警（calibration.weakCases[]） */
+export interface WeakCaseWarning {
+  name: string
+  reason: WeakReason
 }
 
 export type GateVerdict = 'PASS' | 'WARN' | 'FAIL' | 'N/A'
@@ -328,9 +375,17 @@ export interface GateReport {
   repeatedErrorSignatures: ErrorSignatureGroup[]
   /** dsh 版本较 baseline 变化（informational：跨版本结果不可直接比，但不影响判定） */
   dshVersionChange?: { before: string; after: string }
+  /**
+   * after 报告的仪表健康：ok / breach（有哨兵不符合预期）/ skipped（哨兵被关掉）/ absent（无
+   * calibration 段）。breach 与 skipped 判 FAIL，与 baseline 无关
+   */
+  sentinels: SentinelsState
   /** 可靠性不达标的 trials 用例（仅当 gate 开启 minTrialSuccessRate 时产生） */
   unreliableCases: GateUnreliableCase[]
 }
+
+/** gate 文本输出 `SENTINELS=` 行的取值（src/sentinel.ts sentinelsState） */
+export type SentinelsState = 'ok' | 'breach' | 'skipped' | 'absent'
 
 /** stderr 错误签名聚合分组（extractErrorSignature 的产物，跨用例/跨 attempt） */
 export interface ErrorSignatureGroup {

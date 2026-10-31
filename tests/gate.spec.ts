@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { computeGate, gateExitCode, loadReport, renderGateJson, renderGateText } from '../src/gate.ts'
-import type { CaseResult, CaseStatus, RunReport } from '../src/types.ts'
+import type { Calibration, CaseResult, CaseStatus, RunReport, SentinelKind, SentinelResult } from '../src/types.ts'
 
 function caseResult(name: string, status: CaseStatus): CaseResult {
   return {
@@ -589,5 +589,168 @@ describe('loadReport with mockDelivery (schema 兼容)', () => {
     // gate 判定不受信息层字段影响
     const gate = computeGate(null, loaded ?? report([]), false)
     expect(gate.verdict).toBe('N/A')
+  })
+})
+
+describe('computeGate sentinels (calibration)', () => {
+  const sentinel = (name: string, kind: SentinelKind, status: CaseStatus): SentinelResult => {
+    const expected = kind === 'must-pass' ? 'pass' : 'fail'
+    return { name, kind, expected, status, ok: status === expected }
+  }
+  const healthy: Calibration = {
+    sentinels: [sentinel('sentinel-mock-echo', 'must-pass', 'pass'), sentinel('sentinel-mock-impossible', 'must-fail', 'fail')],
+    healthy: true,
+    weakCases: [],
+  }
+  const breached: Calibration = {
+    sentinels: [sentinel('sentinel-mock-echo', 'must-pass', 'fail'), sentinel('sentinel-mock-impossible', 'must-fail', 'error')],
+    healthy: false,
+    weakCases: [],
+  }
+  const skipped: Calibration = { sentinels: [], healthy: false, skipped: true, weakCases: [] }
+  const withCalibration = (r: RunReport, calibration: Calibration): RunReport => ({ ...r, calibration })
+  const same = (): RunReport => report([caseResult('a', 'pass')])
+
+  it('a healthy calibration leaves the verdict alone and prints SENTINELS=ok', () => {
+    const g = computeGate(same(), withCalibration(same(), healthy), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.sentinels).toBe('ok')
+    expect(renderGateText(g).split('\n')).toContain('SENTINELS=ok')
+  })
+
+  it('breach is FAIL (exit 1, strict or not) even when every case matches the baseline', () => {
+    for (const strict of [false, true]) {
+      const g = computeGate(same(), withCalibration(same(), breached), strict)
+      expect(g.verdict).toBe('FAIL')
+      expect(g.exitCode).toBe(1)
+      expect(g.sentinels).toBe('breach')
+      expect(g.reasons).toEqual([
+        'sentinel breach: sentinel-mock-echo expected must-pass got fail',
+        'sentinel breach: sentinel-mock-impossible expected must-fail got error',
+      ])
+      const text = renderGateText(g)
+      expect(text).toContain('OVERALL=FAIL')
+      expect(text).toContain('SENTINELS=breach')
+      expect(text).toContain('REASON sentinel breach: sentinel-mock-echo expected must-pass got fail')
+    }
+  })
+
+  it('skipped sentinels are FAIL too — there is no skip-but-pass combination', () => {
+    const g = computeGate(same(), withCalibration(same(), skipped), false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.exitCode).toBe(1)
+    expect(g.reasons).toEqual(['sentinels skipped'])
+    expect(renderGateText(g)).toContain('SENTINELS=skipped')
+  })
+
+  it('an unhealthy calibration FAILs without a baseline as well (not N/A); a healthy one stays N/A', () => {
+    const g = computeGate(null, withCalibration(same(), breached), false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.exitCode).toBe(1)
+    expect(g.reasons).toEqual([
+      'sentinel breach: sentinel-mock-echo expected must-pass got fail',
+      'sentinel breach: sentinel-mock-impossible expected must-fail got error',
+      'no baseline report; case comparison not applicable',
+    ])
+    expect(computeGate(null, withCalibration(same(), skipped), false).verdict).toBe('FAIL')
+    const na = computeGate(null, withCalibration(same(), healthy), false)
+    expect(na.verdict).toBe('N/A')
+    expect(na.exitCode).toBe(2)
+    expect(na.sentinels).toBe('ok')
+  })
+
+  it('sentinel reasons come first and coexist with case-level FAIL reasons', () => {
+    const g = computeGate(report([caseResult('a', 'pass')]), withCalibration(report([caseResult('a', 'fail')]), breached), false)
+    expect(g.verdict).toBe('FAIL')
+    expect(g.reasons).toEqual([
+      'sentinel breach: sentinel-mock-echo expected must-pass got fail',
+      'sentinel breach: sentinel-mock-impossible expected must-fail got error',
+      'regression: a pass -> fail',
+    ])
+  })
+
+  it('reports without calibration keep the old behavior (SENTINELS=absent)', () => {
+    const pass = computeGate(same(), same(), false)
+    expect(pass.verdict).toBe('PASS')
+    expect(pass.reasons).toEqual(['all case results identical to baseline'])
+    expect(pass.sentinels).toBe('absent')
+    expect(renderGateText(pass)).toContain('SENTINELS=absent')
+    const na = computeGate(null, same(), false)
+    expect(na.verdict).toBe('N/A')
+    expect(na.reasons).toEqual(['no baseline report; gate not applicable'])
+    expect(na.sentinels).toBe('absent')
+  })
+
+  it('judges the current run only: a breached baseline calibration does not matter', () => {
+    const g = computeGate(withCalibration(same(), breached), withCalibration(same(), healthy), false)
+    expect(g.verdict).toBe('PASS')
+    expect(g.sentinels).toBe('ok')
+  })
+})
+
+describe('loadReport calibration', () => {
+  const writeReport = async (value: unknown): Promise<string> => {
+    const root = await mkdtemp(join(tmpdir(), 'eval-report-cal-'))
+    const path = join(root, 'report.json')
+    await writeFile(path, JSON.stringify(value))
+    return path
+  }
+  const s1 = { name: 'sentinel-mock-echo', kind: 'must-pass', expected: 'pass', status: 'pass', ok: true }
+  const s2 = { name: 'sentinel-mock-impossible', kind: 'must-fail', expected: 'fail', status: 'fail', failures: ['output_contains: missing'], ok: true }
+  const withCalibration = (calibration: unknown): unknown => ({ ...report([caseResult('a', 'pass')]), calibration })
+
+  it('preserves a valid calibration, including failures, skipped and weakCases', async () => {
+    const calibration = { sentinels: [s1, s2], healthy: true, weakCases: [{ name: 'a', reason: 'answer-in-prompt' }] }
+    expect((await loadReport(await writeReport(withCalibration(calibration))))?.calibration).toEqual(calibration)
+    const skipped = { sentinels: [], healthy: false, skipped: true, weakCases: [] }
+    expect((await loadReport(await writeReport(withCalibration(skipped))))?.calibration).toEqual(skipped)
+    const breach = { sentinels: [{ ...s1, status: 'error', error: 'delivery-missing: x', ok: false }, s2], healthy: false, weakCases: [] }
+    const loaded = await loadReport(await writeReport(withCalibration(breach)))
+    expect(loaded?.calibration).toEqual(breach)
+    // 端到端：落盘的不健康报告经 loadReport 进 gate 仍是 FAIL
+    expect(computeGate(null, loaded ?? report([]), false).verdict).toBe('FAIL')
+  })
+
+  it('loads reports without calibration exactly as before', async () => {
+    const loaded = await loadReport(await writeReport(report([caseResult('a', 'pass')])))
+    expect(loaded).not.toHaveProperty('calibration')
+  })
+
+  it('rejects malformed sentinel entries', async () => {
+    const reject = async (sentinel: unknown, message: RegExp): Promise<void> => {
+      await expect(loadReport(await writeReport(withCalibration({ sentinels: [sentinel], healthy: false, weakCases: [] })))).rejects.toThrow(message)
+    }
+    await reject({ ...s1, kind: 'must-maybe' }, /calibration\.sentinels\[0\]\.kind must be one of must-pass, must-fail/)
+    await reject({ ...s1, expected: 'fail' }, /calibration\.sentinels\[0\]\.expected must be 'pass' for kind must-pass/)
+    await reject({ ...s1, status: 'skipped' }, /calibration\.sentinels\[0\]\.status must be one of pass, fail, error/)
+    await reject({ ...s1, ok: 'yes' }, /calibration\.sentinels\[0\]\.ok must be a boolean/)
+    // ok 与 status 矛盾：must-fail 记 error 不能标 ok
+    await reject({ ...s2, status: 'error' }, /calibration\.sentinels\[0\]\.ok does not match status 'error' for kind must-fail/)
+  })
+
+  it('rejects a healthy flag that does not match the sentinels (no hand-edited green)', async () => {
+    const breachedS1 = { ...s1, status: 'fail', ok: false }
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [breachedS1, s2], healthy: true, weakCases: [] })))).rejects.toThrow(
+      /calibration\.healthy does not match sentinels \(expected false, got true\)/,
+    )
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [s1, s2], healthy: false, weakCases: [] })))).rejects.toThrow(
+      /calibration\.healthy does not match sentinels \(expected true, got false\)/,
+    )
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [], healthy: true, skipped: true, weakCases: [] })))).rejects.toThrow(
+      /calibration\.healthy does not match sentinels/,
+    )
+  })
+
+  it('rejects inconsistent skipped / empty sentinel sets and malformed weakCases', async () => {
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [s1], healthy: false, skipped: true, weakCases: [] })))).rejects.toThrow(
+      /calibration\.sentinels must be empty when skipped/,
+    )
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [], healthy: false, weakCases: [] })))).rejects.toThrow(
+      /calibration\.sentinels must not be empty unless skipped/,
+    )
+    await expect(loadReport(await writeReport(withCalibration({ sentinels: [s1], healthy: true, weakCases: [{ name: 'a', reason: 'vibes' }] })))).rejects.toThrow(
+      /calibration\.weakCases\[0\]\.reason must be one of host-without-exit-and-turn-end, answer-in-prompt, no-outcome-assertion/,
+    )
+    await expect(loadReport(await writeReport(withCalibration('healthy')))).rejects.toThrow(/calibration must be a mapping/)
   })
 })

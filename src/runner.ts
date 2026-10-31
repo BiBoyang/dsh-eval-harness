@@ -10,8 +10,9 @@ import { judgeConfig, judgeOutput } from './judge.js'
 import { startMockServer } from './mock.js'
 import type { MockEndpoint, MockFault, MockServer } from './mock.js'
 import { renderJson, renderMarkdown } from './report.js'
+import { buildCalibration, checkSentinelCases, judgeSentinel, needsMockSentinels, SENTINELS_DIR, skippedCalibration, weakCaseWarnings } from './sentinel.js'
 import { CURRENT_REPORT_SCHEMA_VERSION, emptyTokenUsage } from './types.js'
-import type { AttemptResult, CaseResult, CollectedTrace, EvalAssert, EvalCase, JudgeEvidence, MockApi, MockCaseConfig, MockDeliverySummary, RunReport } from './types.js'
+import type { AttemptResult, Calibration, CaseResult, CollectedTrace, EvalAssert, EvalCase, JudgeEvidence, MockApi, MockCaseConfig, MockDeliverySummary, RunReport, SentinelKind } from './types.js'
 import { parseYamlSubset } from './yaml-mini.js'
 import { buildReliability } from './reliability.js'
 
@@ -46,6 +47,13 @@ export interface RunOptions {
   tags?: string[]
   /** 只跑这些名字（精确匹配）的用例 */
   only?: string[]
+  /**
+   * 内置 mock 哨兵（cases/_sentinels，见 src/sentinel.ts）总开关，缺省 true：本次用例集含 mock
+   * 用例时注入，结论写 report.calibration。false 且用例集含 mock 用例时记
+   * calibration { skipped: true, healthy: false }，gate 照样判 FAIL——不提供"跳过但放行"。
+   * 只开放给程序调用（不转发 mock 内容的 fake dsh 单测用），不进 eval_run 工具参数。
+   */
+  sentinels?: boolean
 }
 
 const PREFIX = 'eval_run'
@@ -87,6 +95,9 @@ export function parseCase(text: string, file: string): EvalCase {
     if (typeof raw.trials !== 'number' || !Number.isInteger(raw.trials) || raw.trials < 1) {
       throw new Error(`${PREFIX}: failed to parse case file '${file}': 'trials' must be a positive integer`)
     }
+  }
+  if (raw.sentinel !== undefined && raw.sentinel !== 'must-pass' && raw.sentinel !== 'must-fail') {
+    throw new Error(`${PREFIX}: failed to parse case file '${file}': 'sentinel' must be one of must-pass, must-fail`)
   }
   const MOCK_APIS: MockApi[] = ['openai-completions', 'openai-responses', 'anthropic-messages']
   let mock: MockCaseConfig | undefined
@@ -182,7 +193,7 @@ export function parseCase(text: string, file: string): EvalCase {
     }
     assert.output_judge = { rubric: judge.rubric }
   }
-  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, trials: raw.trials as number | undefined, mock, assert }
+  return { name: raw.name, prompt: raw.prompt, require_plugins: raw.require_plugins as string[] | undefined, tags: raw.tags as string[] | undefined, retries: raw.retries as number | undefined, trials: raw.trials as number | undefined, mock, sentinel: raw.sentinel as SentinelKind | undefined, assert }
 }
 
 /**
@@ -814,6 +825,10 @@ async function tryCollectTrace(sessionBase: string, sinceMs: number): Promise<Co
  * trace 进 report（残缺尾帧由 decodeZstdLog 恢复），供排查超时原因。
  *
  * tags / only 筛选后无命中用例会直接报错（防止 CI 里筛选条件笔误导致空跑假绿）。
+ *
+ * 哨兵（src/sentinel.ts）：筛选后的用例集含 mock 用例时，内置哨兵（cases/_sentinels）与主体
+ * 共用 worker 池、排在主体之前跑（P0 不做 fail-fast），各只跑一次；结论写 report.calibration，
+ * 不进 cases / summary。不含 mock 用例的 run 不注入、也不写 calibration。
  */
 export async function runEval(options: RunOptions): Promise<RunReport> {
   const runStartedAtMs = Date.now()
@@ -855,13 +870,17 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
       throw new Error(`${PREFIX}: pass_k (${passK}) must not exceed trials (${trials}) of case '${evalCase.name}'`)
     }
   }
+  // P0 注入规则看筛选后的用例集；哨兵自身不受 tags / only 筛选。先加载校验再开跑：哨兵集
+  // 坏了直接报错，不白跑主体
+  const subjectCases = cases.map((c) => c.evalCase)
+  const sentinelsEnabled = options.sentinels ?? true
+  const wantsSentinels = needsMockSentinels(subjectCases)
+  const sentinelCases = wantsSentinels && sentinelsEnabled ? checkSentinelCases(await loadCases(SENTINELS_DIR), SENTINELS_DIR) : []
   await mkdir(outputDir, { recursive: true })
   await mkdir(sessionBase, { recursive: true })
 
-  const runCase = async (evalCase: EvalCase, index: number): Promise<CaseResult> => {
-    // 隔离目录带加载序号：slugify 不是唯一键（"read image" 与 "read-image" 同 slug），
-    // 并发共享根会让 findSessionFile 错捡别的用例的 session
-    const dirName = `${String(index).padStart(3, '0')}-${slugify(evalCase.name)}`
+  /** 跑一条用例；dirName 是它在 workspace / session / mock home 下的隔离目录名，调用方保证唯一 */
+  const runCase = async (evalCase: EvalCase, dirName: string): Promise<CaseResult> => {
     const workspace = join(workspaceBase, dirName)
     await mkdir(workspace, { recursive: true })
 
@@ -1080,18 +1099,41 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     }
   }
 
-  // worker 池：保序写回 results，report 里用例顺序与 cases 目录文件序一致
+  // worker 池：哨兵在前、主体在后；保序写回 results，report 里用例顺序与 cases 目录文件序一致
   const results: (CaseResult | undefined)[] = new Array(cases.length)
+  const sentinelResults: (CaseResult | undefined)[] = new Array(sentinelCases.length)
+  const jobs: (() => Promise<void>)[] = [
+    // 哨兵只跑一次，不吃全局 retries / trials：重试会掩盖 S1 的抖动，也会白跑必不过的 S2。
+    // 目录名带 _sentinel- 前缀，与主体的「序号-slug」不会撞
+    ...sentinelCases.map((evalCase, i) => async () => {
+      sentinelResults[i] = await runCase({ ...evalCase, retries: 0, trials: 1 }, `_sentinel-${String(i).padStart(3, '0')}-${slugify(evalCase.name)}`)
+    }),
+    // 隔离目录带加载序号：slugify 不是唯一键（"read image" 与 "read-image" 同 slug），
+    // 并发共享根会让 findSessionFile 错捡别的用例的 session
+    ...cases.map((item, i) => async () => {
+      results[i] = await runCase(item.evalCase, `${String(item.loadIndex).padStart(3, '0')}-${slugify(item.evalCase.name)}`)
+    }),
+  ]
   let next = 0
   const worker = async (): Promise<void> => {
-    while (next < cases.length) {
-      const i = next++
-      const item = cases[i]
-      if (!item) break
-      results[i] = await runCase(item.evalCase, item.loadIndex)
+    while (next < jobs.length) {
+      const job = jobs[next++]
+      if (!job) break
+      await job()
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, cases.length) }, () => worker()))
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker()))
+
+  let calibration: Calibration | undefined
+  if (wantsSentinels) {
+    const weakCases = weakCaseWarnings(subjectCases)
+    calibration = sentinelsEnabled
+      ? buildCalibration(
+          sentinelCases.map((evalCase, i) => judgeSentinel(evalCase.sentinel, sentinelResults[i] as CaseResult)),
+          weakCases,
+        )
+      : skippedCalibration(weakCases)
+  }
 
   const runFinishedAtMs = Date.now()
   const report: RunReport = {
@@ -1105,6 +1147,7 @@ export async function runEval(options: RunOptions): Promise<RunReport> {
     ...(dsh.version === undefined ? {} : { dshVersion: dsh.version }),
     cases: results as CaseResult[],
     summary: summarize(results as CaseResult[]),
+    ...(calibration === undefined ? {} : { calibration }),
   }
   await writeFile(join(outputDir, 'report.json'), `${renderJson(report)}\n`)
   await writeFile(join(outputDir, 'report.md'), renderMarkdown(report))

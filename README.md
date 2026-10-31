@@ -160,13 +160,49 @@ ephemeral mock provider（127.0.0.1 随机端口，用后即收），生成隔�
 `eval_run` 传 `tags=chaos` 单跑），把 dsh 0.1.7-rc.2 在六种故障下的实测行为固化为
 断言：F0 对照组；F1-F3 断流静默重试自愈（exit 0 / completed）；F4/F5 检出 length
 截断（exit 1 / turn_end `max-tokens`）。全部离线可跑（无需 `DEEPSEEK_API_KEY`），
-已做阳性对照验证（人为改 fault 证明用例能红）。
+已做阳性对照验证（人为改 fault 证明用例能红）；CI 由 [chaos.yml](.github/workflows/chaos.yml)
+离线常跑（见「CI 集成」）。
 
 **诚实边界**：mock 模式覆盖结构性断言与协议故障路径回归；它**不**覆盖
 `output_judge` 语义评审和任何依赖真实模型能力的用例——这些仍需真实 API，
 mock 不是全面断网方案。chaos 断言钉的是 dsh 当前行为（含 L1 级的缺陷现状：
 F4 检出但无用户文案），**行为固化不等于行为背书**——上游把检出改善为显式告知
 （L2+）或退化为静默（L0），chaos 包都会变红提醒人工确认基线。
+
+### mock 哨兵（仪表健康位）
+
+仪表故障（宿主版本与 mock home 结构漂移、overlay 失效、collector 退化、dsh 没打到 mock）
+单看用例结果分不出来，所以每次含 mock 用例的 run（按 `tags` / `only` 筛选后的用例集判断）
+都内嵌两条随包分发的哨兵 [`cases/_sentinels/`](cases/_sentinels/)：
+
+- S1 `sentinel-mock-echo`，**必过**：F0 健康流，证明 harness → dsh → overlay 落盘 → collector
+  → 断言 → mock 送达整条管线畅通。
+- S2 `sentinel-mock-impossible`，**必不过**：F1 持续注入，mock 每个请求都只发到【P12】，断言
+  要【P24】——判分必须对「内容没送全」说不。`exit_code: 1` 是 dsh 0.1.7-rc.2 重试耗尽后的实测
+  退出码（不声明的话非零退出直接记 error，哨兵会被误判为破）。
+
+规则：
+
+- 哨兵就是普通用例 yaml 加顶层键 `sentinel: must-pass | must-fail`。它们不受 `tags` / `only`
+  筛选，不进 `cases` 与 `summary`，也不与 baseline 比；各只跑一次（不吃 `retries` / `trials`、
+  不加重试——mock 是本地确定环境，哨兵抖了先查环境：端口、代理）。S2 要跑满 dsh 的断流重试
+  （实测约 18s），`timeout_ms` 过小会让它超时记 error，也就是破。
+- 判定：must-pass 要求 `pass`，must-fail 要求 `fail`；**error 也算破**（如 `delivery-missing`：
+  dsh 根本没打到 mock）。任一哨兵不符合预期 → `healthy: false` → `eval_gate` 判 `FAIL`（exit 1，
+  与 baseline 无关，理由见 [docs/gate-signals.md](docs/gate-signals.md) §7）。P0 不做 fail-fast：
+  S1 破了主体照常跑完，结果留作诊断。
+- 结论写 report.json 的可选段 `calibration`（schema 仍为 1；`eval_run` 的 JSON 输出也带同一段）：
+  `{ sentinels: [{ name, kind, expected, status, error?, failures?, ok }], healthy, skipped?, weakCases: [{ name, reason }] }`。
+  report.md 头部多一行「仪表健康：OK / BREACH / SKIPPED」，并附哨兵明细（破掉的哨兵带 error 与断言失败）。
+- `weakCases`：本次 subject 用例里 `assessAssertionStrength` 静态判弱的（如 mock 用例没有同时
+  声明 `exit_code` 与 `turn_end`），只告警、不影响判定，report.md 出「弱用例告警」段。
+- **不得删除、不得筛掉哨兵**：它们是这次 run 的仪表读数，不是可选用例。`RunOptions.sentinels: false`
+  只开放给程序调用（不转发 mock 内容的 fake dsh 单测用），不进 `eval_run` 工具参数；关掉时只要
+  用例集含 mock 用例，就记 `calibration: { skipped: true, healthy: false }`，gate 照样 FAIL——
+  没有「跳过但放行」的组合。
+- 不含 mock 用例的 run（如 `cases/real`）P0 不注入，报告没有 `calibration` 段（gate 输出
+  `SENTINELS=absent`）；真实 API 哨兵属 P1。`sentinel` 键只在内置哨兵集里生效，写在普通用例里
+  不改变它的语义（照常进 `cases` / `summary`）。
 
 ## 工具参数
 
@@ -187,7 +223,8 @@ F4 检出但无用户文案），**行为固化不等于行为背书**——上�
 | `tags` | string | 否 | - | 逗号分隔标签筛选：只跑 yaml `tags` 命中任一的用例 |
 | `only` | string | 否 | - | 逗号分隔用例名（精确匹配）；与 tags 同给时取交集；筛选后无命中会直接报错（防 CI 笔误空跑假绿） |
 
-输出：JSON 文本（summary + 报告路径 + 各用例状态）。错误一律 throw
+输出：JSON 文本（summary + 报告路径 + 各用例状态；含 mock 用例的 run 在 summary 后另带
+`calibration`，`healthy: false` 即仪表坏了、本次结论不可信）。错误一律 throw
 `eval_run:` 前缀消息（找不到 dsh 可执行文件、用例解析失败等）。
 
 `report.json` 当前写入 `schemaVersion: 1`。`eval_gate` 会严格校验当前 schema；未带
@@ -199,7 +236,9 @@ F4 检出但无用户文案），**行为固化不等于行为背书**——上�
 进程诊断、trace 摘要、token 与耗时；`CaseResult` 顶层字段继续表示最后一次 attempt，
 兼容现有 gate 与报告消费者。旧报告没有真实 attempt 历史时，loader 会合成一条单次记录，
 不会伪造旧报告不存在的重试信息。报告头部另记 `dshVersion`（`dsh --version` 探针首行），
-排障时可直接区分「dsh 变了」还是「模型变了」。
+排障时可直接区分「dsh 变了」还是「模型变了」。含 mock 用例的 run 另写 `calibration` 段
+（哨兵结论 + 弱用例告警，见「mock 哨兵」），`eval_run` 的 JSON 输出与 `eval_gate` 的
+`SENTINELS=` 行都能看到它。
 
 `trials > 1` 的用例额外写入 `reliability`：`successRate`（单次成功率）、`passAtK`
 （无偏估计 1−C(n−c,k)/C(n,k)）、`passPowK`（无偏估计 C(c,k)/C(n,k)；不用 plug-in 的
@@ -313,6 +352,7 @@ request_timeout_ms: 300000
 
 | 条件 | 判定 | 退出码 |
 | --- | --- | --- |
+| 本次报告带 `calibration` 且不健康：哨兵破（reason `sentinel breach: <name> expected <kind> got <status>`）或被关掉（`sentinels skipped`）；与 baseline 无关，无 baseline 也判 | `FAIL` | 1 |
 | 有用例 PASS → FAIL/error，或新增用例即 FAIL/error | `FAIL` | 1 |
 | baseline 有、本次缺席的用例（reason `missing case: …`；删/改名用例须同 PR 刷新 baseline，见 [docs/gate-signals.md](docs/gate-signals.md)） | `FAIL` | 1 |
 | 有用例 FAIL/error → PASS，或新增通过用例 | `WARN` | 0（strict 为 2） |
@@ -324,14 +364,16 @@ request_timeout_ms: 300000
 | 开启 `min_trial_success_rate` 时：trials 用例 successRate 的单侧 95% Wilson 下界低于阈值 | `WARN` | 0（strict 为 2） |
 | dsh 版本较 baseline 变化 | 仅 informational reason + `DSH_VERSION_CHANGED` 行，不影响判定 | - |
 | 全部与 baseline 一致 | `PASS` | 0 |
-| 无 baseline | `N/A` | 2 |
+| 无 baseline（`calibration` 不健康时按第一行判 `FAIL`） | `N/A` | 2 |
 
-文本输出（key=value 行 + 明细行）：
+文本输出（key=value 行 + 明细行；`SENTINELS=` 取 `ok` / `breach` / `skipped` / `absent`，
+`absent` 即报告没有 `calibration` 段）：
 
 ```
 OVERALL=FAIL
 EXIT_CODE=1
 STRICT=false
+SENTINELS=absent
 REGRESSIONS=1
 NEW_FAILURES=0
 IMPROVEMENTS=0
@@ -363,6 +405,14 @@ LLM 或 API key。真实 agent 回归 workflow 见 [.github/workflows/eval.yml](
 另有每日定时跑（近 24h 无新 commit 则跳过）。**不跑不是绿**：主仓库（push / 定时 / 手动 /
 同仓 PR）缺 `DEEPSEEK_API_KEY` 时 `Require eval evidence` 步直接让 job 失败；fork PR 拿不到
 secrets（fork 仓库自己的运行也不受主仓库规则约束），跳过评测并在 step summary 写 `EVAL_SKIPPED=1`。
+
+离线 chaos workflow 见 [.github/workflows/chaos.yml](.github/workflows/chaos.yml)：`src/**`、
+`cases/chaos/**`、`cases/_sentinels/**` 或该 workflow 自身变更时（push / PR）以及手动触发时，
+装 npm 版 dsh 0.1.7-rc.2（mock home 结构的锚定版本），`pnpm build` 后用 `runEval` 跑
+`cases/chaos`——全程打本地 mock，不需要 API key，mock 哨兵随之注入。只有
+`summary.failed + summary.errored === 0` 且 `calibration.healthy === true` 才算绿；report.json /
+report.md 作为 artifact 留存。它与 eval.yml 分开：eval.yml 仍装 0.1.1-rc.2 跑 `cases/real`
+（不含 mock 用例，不注入哨兵），其 dsh 升级属 P1。
 
 baseline 更新走 [.github/workflows/update-baseline.yml](.github/workflows/update-baseline.yml)：
 Actions 页手动触发 → 全量重跑 → 覆盖 `baseline/report.json` 并开 PR（附报告摘要），

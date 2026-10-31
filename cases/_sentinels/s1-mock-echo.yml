@@ -1,0 +1,13 @@
+# 必过哨兵 S1：整条 mock 管线畅通（harness → dsh → overlay 落盘 → collector → 断言 → mock 送达）。
+# 破了说明仪表坏了（宿主版本与 mock home 结构漂移、overlay 失效、collector 退化等），不是被测故障。
+# 内置于每次含 mock 用例的 run，结果写 report.calibration；不得删除、不得筛掉（README「mock 哨兵」）。
+name: sentinel-mock-echo
+sentinel: must-pass
+prompt: |
+  写一份三节分析报告。直接输出报告全文，不要调用任何工具。
+mock:
+  fault: F0
+assert:
+  turn_end: completed
+  exit_code: 0
+  output_contains: ["【P01】", "【P24】"]

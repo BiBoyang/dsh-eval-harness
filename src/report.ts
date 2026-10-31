@@ -1,5 +1,28 @@
 import { aggregateErrorSignatures, REPEATED_SIGNATURE_THRESHOLD } from './error-signature.js'
-import type { JudgeEvidence, MockDeliverySummary, RunReport } from './types.js'
+import { sentinelsState } from './sentinel.js'
+import type { WeakReason } from './strength.js'
+import type { Calibration, JudgeEvidence, MockDeliverySummary, RunReport } from './types.js'
+
+/** 弱用例原因的读者向说明（assessAssertionStrength 的判弱依据） */
+const WEAK_REASON_TEXT: Record<WeakReason, string> = {
+  'host-without-exit-and-turn-end': 'mock 用例没有同时声明 exit_code 与 turn_end',
+  'answer-in-prompt': '期望串都能从 prompt 字面复述得到',
+  'no-outcome-assertion': '没有结果型断言',
+}
+
+/** 报告头部「仪表健康」行：哨兵结论一眼可见（无 calibration 段的 run 不写这一行） */
+function calibrationLine(calibration: Calibration): string {
+  const okCount = calibration.sentinels.filter((s) => s.ok).length
+  const tally = `哨兵 ${okCount}/${calibration.sentinels.length} 符合预期`
+  switch (sentinelsState(calibration)) {
+    case 'ok':
+      return `- 仪表健康：OK（${tally}）`
+    case 'skipped':
+      return '- 仪表健康：SKIPPED（含 mock 用例但哨兵被关掉，sentinels=false）——gate 判 FAIL'
+    default:
+      return `- 仪表健康：BREACH（${tally}）——仪表本身出了问题，本次结论不可信，gate 判 FAIL`
+  }
+}
 
 /** mock 送达证明摘要（多条以 ; 分隔）：fault 端点 事件数/字节数 + 关流方式 + 已送达的终止证人 */
 function formatMockDelivery(deliveries: MockDeliverySummary[]): string {
@@ -44,6 +67,7 @@ export function renderMarkdown(report: RunReport): string {
     `- profile：${report.profile}`,
     ...(report.dshVersion === undefined ? [] : [`- dsh 版本：${mdEscape(report.dshVersion)}`]),
     `- 汇总：共 ${report.summary.total} 条，PASS ${report.summary.passed} / FAIL ${report.summary.failed} / ERROR ${report.summary.errored}${flakyCount > 0 ? `（其中 flaky ${flakyCount} 条——重跑后才过，首跑失败原因需排查）` : ''}`,
+    ...(report.calibration === undefined ? [] : [calibrationLine(report.calibration)]),
     '',
     '| 用例 | 结果 | steps | events/skipped | tokens total (in+out+reas; cacheR+cacheW) | turn_end | 可靠性 (trials) | 耗时 ms |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
@@ -59,6 +83,17 @@ export function renderMarkdown(report: RunReport): string {
     lines.push(
       `| ${mdEscape(c.name)} | ${status} | ${c.steps} | ${c.events}/${c.skippedLines} | ${formatTokens(c.tokens)} | ${c.turnEnd ?? '-'} | ${reliability} | ${c.durationMs} |`,
     )
+  }
+  // 哨兵明细：不进上面的用例表；破掉的哨兵附 error / 断言失败（它的 trace 不进 cases，诊断靠这里）
+  const sentinels = report.calibration?.sentinels ?? []
+  if (sentinels.length > 0) {
+    lines.push('', '## 仪表健康（哨兵）', '')
+    for (const s of sentinels) {
+      lines.push(`- ${mdEscape(s.name)}（${s.kind}）：${s.status.toUpperCase()}，${s.ok ? '符合预期' : '**不符合预期**'}`)
+      if (s.ok) continue
+      if (s.error) lines.push(`  - error: ${mdEscape(s.error)}`)
+      for (const f of s.failures ?? []) lines.push(`  - ${mdEscape(f)}`)
+    }
   }
   const failed = report.cases.filter((c) => c.status !== 'pass')
   const withHistory = report.cases.filter((c) => c.attemptResults.length > 1)
@@ -109,6 +144,13 @@ export function renderMarkdown(report: RunReport): string {
     for (const g of repeated) {
       lines.push(`- \`${mdEscape(g.signature)}\` × ${g.occurrences}（用例：${g.cases.map(mdEscape).join(', ')}）`)
     }
+    lines.push('')
+  }
+  const weakCases = report.calibration?.weakCases ?? []
+  if (weakCases.length > 0) {
+    lines.push('', '## 弱用例告警', '')
+    lines.push('以下用例的断言静态判弱（assessAssertionStrength）：不解题的 agent 也可能通过。只告警，不影响判定：', '')
+    for (const w of weakCases) lines.push(`- ${mdEscape(w.name)}：${w.reason}（${WEAK_REASON_TEXT[w.reason]}）`)
     lines.push('')
   }
   return `${lines.join('\n')}\n`
