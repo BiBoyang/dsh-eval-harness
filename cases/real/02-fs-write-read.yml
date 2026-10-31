@@ -10,5 +10,9 @@ assert:
   turn_end: completed
   tools_called: ["write", "read"]
   output_contains: ["FSMARK-9c2e"]
+  # 结果型断言：read 真实读回的内容里须有 FSMARK-9c2e（baseline："1: FSMARK-9c2e"），复述 prompt 过不了
+  tool_result_contains:
+    - name: read
+      contains: FSMARK-9c2e
   max_steps: 10
   max_tokens: 30000

@@ -50,10 +50,28 @@ assert:
   确实需要「恰好这些调用、一次不多」时才用 `tools_exact`；反向禁用某工具用
   `tools_not_called`；锁工具入参/返回内容用 `tool_args_contains` /
   `tool_result_contains`（按工具名匹配至少一次调用/结果，子串包含即可）。
-- **prompt 自包含**：headless 一次性会话，没有上下文；把插件名、输入数据、
-  期望输出关键词都写进 prompt。
+- **prompt 自包含，期望串由工具的真实结果证明**：headless 一次性会话，没有上下文；
+  把插件名、输入数据都写进 prompt。期望串常常也会出现在 prompt 里（如「最终回复里
+  必须包含 X」），而 `output_contains` / `output_matches` / `tool_args_contains` 都是
+  字面匹配——不调工具、原样复述 prompt 的 agent 照样能过。所以每条真实 API 用例至少
+  要有一条**结果型断言**：首选 `tool_result_contains`，把期望串绑到被测工具的真实返回上
+  （写之前先在一次真实运行的 report.json `toolResults` 里核对原文，不要凭想象写）；
+  或者让 `output_contains` / `output_matches` / `tool_args_contains` 的期望串不出现在
+  prompt 字面里（必须真实执行才能得到）。`no_tool_errors`、`tools_called` 只认调用
+  成功与工具名，不算结果型断言。
 - **`output_contains` 选稳定关键词**：挑 agent 正常完成时几乎必出现的词
-  （如工具名、确定的结果串），避免整句匹配导致 flaky。
+  （如确定的结果串），避免整句匹配导致 flaky。它只证明最终回复写了什么，证明不了
+  工具真的执行过——期望串在 prompt 里时，必须再配一条 `tool_result_contains`。
+- **断言强度有静态检查与白名单**：本仓库的 `tests/probes.spec.ts` 用
+  `assessAssertionStrength`（`src/strength.ts`）扫描 `cases/` 下的用例：真实 API 用例
+  没有结果型断言即判弱（期望串都能从 prompt 复述得到为 `answer-in-prompt`，只断言
+  工具名 / 终态 / 资源上限为 `no-outcome-assertion`）；mock 用例没有同时声明
+  `exit_code` 与 `turn_end` 即判弱。同一文件还用 parrot 探针（复述 prompt、工具结果
+  一律报错）跑 `cases/real`，必须一条都过不了。判弱名单 `KNOWN_WEAK_CASES` 与实测
+  **完全相等**：新用例判弱先加固，不要往名单里加；只有静态误判（期望串在 prompt 里、
+  但语义上确实要执行才能得到）才留在名单里，并在该行旁写明理由；用例修好后同一个
+  PR 从名单移除。另有 `tests/baseline-replay.spec.ts` 用 baseline 的真实轨迹回放当前
+  断言：期望串抄错、断言收得过紧会直接变红。维护规则见 `docs/abc-checklist.md` §5。
 - **多行 prompt 用块标量**：
   ```yaml
   prompt: |

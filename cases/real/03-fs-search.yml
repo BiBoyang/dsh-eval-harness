@@ -10,5 +10,9 @@ assert:
   turn_end: completed
   tools_called: ["write", "grep"]
   output_contains: ["GAMMA-3e8f"]
+  # 结果型断言：grep 真实命中的行里须有 GAMMA-3e8f（baseline："Line 3: GAMMA-3e8f"），复述 prompt 过不了
+  tool_result_contains:
+    - name: grep
+      contains: GAMMA-3e8f
   max_steps: 12
   max_tokens: 30000

@@ -11,5 +11,9 @@ assert:
   tool_args_contains:              # bash 入参 JSON 串里必须真的带着目标串（防编造输出）
     - name: bash
       contains: BASHOK-7f3a
+  # 结果型断言：bash 真实执行才会返回 BASHOK-7f3a（baseline 原文即该串），复述 prompt 过不了
+  tool_result_contains:
+    - name: bash
+      contains: BASHOK-7f3a
   max_steps: 8
   max_tokens: 30000

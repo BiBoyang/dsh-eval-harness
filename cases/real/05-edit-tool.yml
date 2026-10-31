@@ -10,5 +10,9 @@ assert:
   turn_end: completed
   tools_called: ["write", "edit", "read"]
   output_contains: ["hello there"]
+  # 结果型断言：edit 生效后 read 读回的内容里须有 hello there（baseline："1: hello there"），复述 prompt 过不了
+  tool_result_contains:
+    - name: read
+      contains: "hello there"
   max_steps: 12
   max_tokens: 30000

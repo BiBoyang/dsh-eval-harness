@@ -16,36 +16,19 @@ import type { EvalAssert, EvalCase, MockCaseConfig, RunReport } from '../src/typ
  * KNOWN_WEAK_CASES，并在该行旁写明理由；不许为了变绿改名单而不留理由。
  */
 
-/** parrot 探针在 cases/real 上能通过的用例（初值：2026-10-30 实测 10/12） */
-const KNOWN_PARROT_PASSABLE: readonly string[] = [
-  'bash-tool',
-  'fs-write-read',
-  'fs-search',
-  'todo-tool',
-  'edit-tool',
-  'glob-tool',
-  'web-search',
-  'subagent-delegate',
-  'workflow-fanout',
-  'bash-only',
-]
+/**
+ * parrot 探针在 cases/real 上能通过的用例：2026-10-30 实测 10/12；TASK-p0-case-hardening 给这 10 条
+ * 补上 tool_result_contains 后为 0/12，名单应保持为空
+ */
+const KNOWN_PARROT_PASSABLE: readonly string[] = []
 
-/** assessAssertionStrength 判弱的用例及原因（扫描范围见 caseDirs；初值 14 条） */
+/** assessAssertionStrength 判弱的用例及原因（扫描范围见 caseDirs；初值 14 条，TASK-p0-case-hardening 后 4 条，cases/real 为 0） */
 const KNOWN_WEAK_CASES: Readonly<Record<string, WeakReason>> = {
-  // cases/example.case.yml
+  // cases/example.case.yml：语法示例，不是被测用例（不在 cases/real 评测范围、没有 baseline），保留
   'echo-hello': 'answer-in-prompt',
-  // cases/real：与 KNOWN_PARROT_PASSABLE 同一批，期望串都写在 prompt 里
-  'bash-tool': 'answer-in-prompt',
-  'fs-write-read': 'answer-in-prompt',
-  'fs-search': 'answer-in-prompt',
-  'todo-tool': 'answer-in-prompt',
-  'edit-tool': 'answer-in-prompt',
-  'glob-tool': 'answer-in-prompt',
-  'web-search': 'answer-in-prompt',
-  'subagent-delegate': 'answer-in-prompt',
-  'workflow-fanout': 'answer-in-prompt',
-  'bash-only': 'answer-in-prompt',
-  // cases/plugins/* 的 L2 冒烟：只断言 tools_called / exit_code / turn_end / max_steps
+  // cases/plugins/* 的 L2 冒烟：只断言 tools_called / exit_code / turn_end / max_steps。暂无可绑定的结果证据：
+  // agent-teams、modlens 的本地 L2 报告（.eval/plugin-check-2026-09-26/）里工具结果文本是空串，routing-suite
+  // 没有本地 L2 报告；疑似 collector 对非 text 结果块的提取缺口，单独排查后再加固，此前保留
   'agent-teams-smoke-status': 'no-outcome-assertion',
   'routing-suite-smoke-injected-list': 'no-outcome-assertion',
   'modlens-smoke-read-image': 'no-outcome-assertion',

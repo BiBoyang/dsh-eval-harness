@@ -10,5 +10,11 @@ assert:
   turn_end: completed
   tools_called: ["write", "glob"]
   output_contains: ["foo-1.txt", "foo-2.txt"]
+  # 结果型断言：glob 真实返回的列表里须同时有 foo-1.txt 与 foo-2.txt（baseline："foo-1.txt\nfoo-2.txt"）
+  tool_result_contains:
+    - name: glob
+      contains: foo-1.txt
+    - name: glob
+      contains: foo-2.txt
   max_steps: 12
   max_tokens: 30000

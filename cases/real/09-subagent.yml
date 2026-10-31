@@ -8,5 +8,9 @@ assert:
   turn_end: completed
   tools_called: ["subagent"]
   output_contains: ["SUBAOK-5b1d"]
+  # 结果型断言：subagent 的返回（子代理最终回复）须含 SUBAOK-5b1d（baseline 原文即该串），复述 prompt 过不了
+  tool_result_contains:
+    - name: subagent
+      contains: SUBAOK-5b1d
   max_steps: 12
   max_tokens: 60000

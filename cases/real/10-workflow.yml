@@ -7,5 +7,14 @@ assert:
   turn_end: completed
   tools_called: ["workflow"]
   output_contains: ["AAA", "BBB"]
+  # 结果型断言：workflow 真实跑完才会返回 "(2 agents)" 与两个子代理的结果
+  # （baseline：workflow "minimal-fanout" completed (2 agents). … "first": "AAA", "second": "BBB" …）
+  tool_result_contains:
+    - name: workflow
+      contains: "(2 agents)"
+    - name: workflow
+      contains: AAA
+    - name: workflow
+      contains: BBB
   max_steps: 12
   max_tokens: 80000
